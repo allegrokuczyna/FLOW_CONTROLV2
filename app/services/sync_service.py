@@ -1,16 +1,25 @@
 import httpx
+import pandas as pd
 from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, User
+from app.db.models import WorkExport, WorkerPerformance
 
+# --- POMOCNIK: PARSOWANIE PROCENTÓW ---
+def parse_percent(val):
+    if pd.isna(val) or val == "":
+        return 0.0
+    try:
+        # Zamiana "138,71%" na 1.3871
+        clean_val = str(val).replace('%', '').replace(',', '.').strip()
+        return float(clean_val) / 100.0
+    except (ValueError, TypeError):
+        return 0.0
 
-
-#===============pobieranie danych===================================
+# --- POBIERANIE DANYCH Z D365 ---
 async def get_data(endpoint_url: str):
-    """Pomocnicza funkcja do pobierania danych z D365 OData."""
     token = await get_d365_access_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = str(settings.D365_URL).strip('/')
@@ -21,33 +30,25 @@ async def get_data(endpoint_url: str):
         if response.status_code == 200:
             return response.json().get("value", [])
         return []
-#===================PRACE/OTWARTE/MAGAZYN ADM-01/ -================
+
+# --- SYNC PRAC (SNAJPER MERX) ---
 async def sync_works(db: AsyncSession):
-    """Główna logika synchronizacji prac magazynowych z customowymi datami Merx."""
-    
-    # 1. Pobieramy otwarte prace dla magazynu ADM-01
+    print("🔄 Start synchronizacji prac...")
     url_works = "WarehouseWorkHeaders?cross-company=true&$filter=WarehouseId eq 'ADM-01' and WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open'&$top=2000"
     works_data = await get_data(url_works)
     
     if not works_data:
-        print("ℹ️ Brak prac do synchronizacji.")
         return
 
-    # Filtrujemy tylko te bez przypisanego kontenera
     valid_works = [w for w in works_data if str(w.get("ContainerId") or "").strip() == ""]
-    
-    # Pobieramy unikalne numery zamówień do celowanego zapytania o daty
     unique_orders = list(set(str(w.get("SourceOrderNumber", "")).strip() for w in valid_works if w.get("SourceOrderNumber")))
     
-    # 2. Pobieramy daty wysyłki z encji customowej (batching po 40 sztuk)
     date_map = {}
     chunk_size = 40 
-    
     for i in range(0, len(unique_orders), chunk_size):
         chunk = unique_orders[i:i + chunk_size]
         filter_str = " or ".join([f"SalesTable_SalesId eq '{order}'" for order in chunk])
         url_dates = f"MerxWHASalesProcessingDates?cross-company=true&$filter={filter_str}"
-        
         chunk_data = await get_data(url_dates)
         for d in chunk_data:
             order_id = str(d.get("SalesTable_SalesId") or "").strip()
@@ -55,28 +56,20 @@ async def sync_works(db: AsyncSession):
             if order_id and raw_date:
                 date_map[order_id] = raw_date.split("T")[0]
 
-    # 3. Zapis/Aktualizacja danych w bazie Postgres
-    inserted_count = 0
     for w in valid_works:
         order_num = str(w.get("SourceOrderNumber") or "").strip()
+        final_date = None
         custom_date_str = date_map.get(order_num)
         
-        final_date = None
-        # Próba konwersji daty z Merx
         if custom_date_str:
-            try:
-                final_date = date.fromisoformat(custom_date_str)
-            except ValueError:
-                pass
+            try: final_date = date.fromisoformat(custom_date_str)
+            except: pass
         
-        # Fallback do daty requested, jeśli merx nie dostarczył poprawnej daty
         if not final_date:
             fallback_dt = w.get("WHAShippingDateRequested", "")
             if fallback_dt:
-                try:
-                    final_date = date.fromisoformat(fallback_dt.split("T")[0])
-                except ValueError:
-                    final_date = None
+                try: final_date = date.fromisoformat(fallback_dt.split("T")[0])
+                except: pass
 
         stmt = insert(WorkExport).values(
             work_id=w.get("WarehouseWorkId") or w.get("WorkId"),
@@ -99,8 +92,51 @@ async def sync_works(db: AsyncSession):
             }
         )
         await db.execute(stmt)
-        inserted_count += 1
         
     await db.commit()
-    print(f"✅ Sync complete: {inserted_count} records processed.")
+    print("✅ Prace zsynchronizowane.")
 
+# --- IMPORT PRODUKTYWNOŚCI (UNIWERSALNY) ---
+async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
+    """Zapisuje dane z tabeli Excel/Sheets do bazy danych."""
+    print(f"📊 DEBUG: Kolumny jakie widzę w pliku: {df.columns.tolist()}") # To nam powie prawdę
+    
+    # Próbujemy znaleźć kolumnę login, ignorując wielkość liter
+    login_col = next((c for c in df.columns if str(c).lower().strip() == 'login'), None)
+    
+    if not login_col:
+        print("❌ BŁĄD: Nie znalazłem kolumny 'Login' w pliku!")
+        return 0
+
+    print(f"🔎 Używam kolumny '{login_col}' jako loginów.")
+    
+    for _, row in df.iterrows():
+        login = str(row.get(login_col, '')).strip()
+        if not login or login.lower() == 'nan':
+            continue
+            
+        stmt = insert(WorkerPerformance).values(
+            login=login,
+            forklift=parse_percent(row.get('FORKLIFT')),
+            packing=parse_percent(row.get('Packing')),
+            picking=parse_percent(row.get('Picking')),
+            putaway=parse_percent(row.get('Putaway')),
+            receiving=parse_percent(row.get('Receiving')),
+            returns=parse_percent(row.get('Returns')),
+            sorting=parse_percent(row.get('Sorting'))
+        ).on_conflict_do_update(
+            index_elements=['login'],
+            set_={
+                "forklift": parse_percent(row.get('FORKLIFT')),
+                "packing": parse_percent(row.get('Packing')),
+                "picking": parse_percent(row.get('Picking')),
+                "putaway": parse_percent(row.get('Putaway')),
+                "receiving": parse_percent(row.get('Receiving')),
+                "returns": parse_percent(row.get('Returns')),
+                "sorting": parse_percent(row.get('Sorting'))
+            }
+        )
+        await db.execute(stmt)
+    
+    await db.commit()
+    return len(df)
