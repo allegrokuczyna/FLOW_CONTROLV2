@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.database import get_db
@@ -29,36 +29,49 @@ async def get_exported_data(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 # --- IMPORT WYDAJNOŚCI Z PLIKU ---
-@router.post("/upload/productivity")
-async def upload_productivity(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="To nie jest plik Excela!")
-    
+@router.post("/upload/productivity_json")
+async def upload_productivity_json(request: Request, db: AsyncSession = Depends(get_db)):
+    """Odbiera dane produktywności i inteligentnie szuka nagłówka 'Login'."""
     try:
-        content = await file.read()
+        body = await request.json()
+        raw_data = body.get("data", [])
         
-        # 1. Najpierw czytamy plik bez nagłówków, żeby go przeszukać
-        df_raw = pd.read_excel(io.BytesIO(content), header=None)
+        if not raw_data:
+            return {"status": "error", "message": "Brak danych z Google Sheets."}
+
+        # 1. Tworzymy surową tabelę z tego, co przysłał Google
+        df_raw = pd.DataFrame(raw_data)
         
-        # 2. Szukamy, w którym wierszu jest słowo "Login"
-        header_row = 0
+        # 2. Szukamy, w którym wierszu jest nagłówek "Login"
+        header_row_index = 0
+        found = False
         for i, row in df_raw.iterrows():
             if row.astype(str).str.contains('Login', case=False).any():
-                header_row = i
+                header_row_index = i
+                found = True
                 break
         
-        print(f"🎯 Znaleziono nagłówki w wierszu: {header_row}")
+        if not found:
+            print("❌ BŁĄD: W przesłanym arkuszu nie znaleziono kolumny 'Login'!")
+            return {"status": "error", "message": "Nie znaleziono kolumny 'Login'."}
 
-        # 3. Wczytujemy ponownie, startując od znalezionego wiersza
-        df = pd.read_excel(io.BytesIO(content), header=header_row)
+        # 3. Wycinamy dane: wiersz z nagłówkiem 
+        new_header = df_raw.iloc[header_row_index]
+        df = pd.DataFrame(df_raw.values[header_row_index + 1:], columns=new_header)
         
-        # Przetwarzamy dane
+        # Czyścimy nazwy kolumn ze spacji
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        print(f"🎯 Znaleziono nagłówki w wierszu {header_row_index}. Kolumny: {df.columns.tolist()}")
+
+        # 4. Przesyłamy do  serwisu
         count = await import_productivity_data(df, db)
-        return {"status": "success", "message": f"Zaimportowano {count} rekordów."}
+        
+        return {"status": "success", "message": f"Zsynchronizowano {count} rekordów."}
         
     except Exception as e:
-        print(f"❌ Błąd: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Błąd odbiornika: {e}")
+        return {"status": "error", "message": str(e)}
 
 # --- PODGLĄD WYDAJNOŚCI ---
 @router.get("/productivity")
