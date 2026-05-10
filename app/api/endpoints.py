@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.database import get_db
-from app.db.models import WorkExport, WorkerPerformance  # Dodano WorkerPerformance
-from app.services.sync_service import sync_works, import_productivity_data
+from app.db.models import WorkExport, WorkerPerformance
+from app.services.sync_service import sync_works, import_productivity_data, process_full_system_sync
 import io
 import pandas as pd
 
@@ -64,7 +64,7 @@ async def upload_productivity_json(request: Request, db: AsyncSession = Depends(
         
         print(f"🎯 Znaleziono nagłówki w wierszu {header_row_index}. Kolumny: {df.columns.tolist()}")
 
-        # 4. Przesyłamy do  serwisu
+        # 4. Przesyłamy do serwisu
         count = await import_productivity_data(df, db)
         
         return {"status": "success", "message": f"Zsynchronizowano {count} rekordów."}
@@ -79,3 +79,8 @@ async def get_worker_performance(db: AsyncSession = Depends(get_db)):
     """Pobiera listę wydajności wszystkich pracowników z bazy."""
     result = await db.execute(select(WorkerPerformance))
     return result.scalars().all()
+
+# --- GŁÓWNY ENDPOINT SYNCHRONIZACJI SYSTEMU ---
+@router.post("/sync/full_system/")
+async def full_system_sync(payload: dict, db: AsyncSession = Depends(get_db)):
+    return await process_full_system_sync(payload, db)

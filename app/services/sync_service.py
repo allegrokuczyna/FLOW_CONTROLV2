@@ -1,22 +1,40 @@
 import httpx
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance
+from app.db.models import WorkExport, WorkerPerformance, Schedule
+
+# --- INTELIGENTNY PARSER DATY ---
+def flexible_date_parser(text):
+    """Próbuje zamienić nagłówek na czystą datę."""
+    try:
+        ts = pd.to_datetime(text, errors='coerce')
+        if pd.isna(ts):
+            # Próba dla polskich skrótów
+            miesiące = {'sty': 1, 'lut': 2, 'mar': 3, 'kwi': 4, 'maj': 5, 'cze': 6,
+                        'lip': 7, 'sie': 8, 'wrz': 9, 'paź': 10, 'lis': 11, 'gru': 12}
+            parts = str(text).lower().strip().split(' ')
+            if len(parts) == 2:
+                day = int(parts[0])
+                month = miesiące.get(parts[1][:3])
+                if month: return date(2026, month, day)
+            return None
+
+        if ts.hour == 23:
+            ts = ts + timedelta(hours=1)
+        return ts.date()
+    except:
+        return None
 
 # --- POMOCNIK: PARSOWANIE PROCENTÓW ---
 def parse_percent(val):
-    if pd.isna(val) or val == "":
-        return 0.0
+    if pd.isna(val) or val == "": return 0.0
     try:
-        # Zamiana "138,71%" na 1.3871
-        clean_val = str(val).replace('%', '').replace(',', '.').strip()
-        return float(clean_val) / 100.0
-    except (ValueError, TypeError):
-        return 0.0
+        return float(str(val).replace('%', '').replace(',', '.').strip()) / 100.0
+    except: return 0.0
 
 # --- POBIERANIE DANYCH Z D365 ---
 async def get_data(endpoint_url: str):
@@ -24,25 +42,25 @@ async def get_data(endpoint_url: str):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = str(settings.D365_URL).strip('/')
     url = f"{base_url}/data/{endpoint_url}"
-    
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json().get("value", [])
-        return []
+        return response.json().get("value", []) if response.status_code == 200 else []
 
-# --- SYNC PRAC (SNAJPER MERX) ---
+# --- SYNC PRAC DYNAMICS (PRZYWRÓCONY) ---
 async def sync_works(db: AsyncSession):
-    print("🔄 Start synchronizacji prac...")
+    print("🔄 Start synchronizacji prac Dynamics...")
     url_works = "WarehouseWorkHeaders?cross-company=true&$filter=WarehouseId eq 'ADM-01' and WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open'&$top=2000"
-    works_data = await get_data(url_works)
     
+    works_data = await get_data(url_works)
     if not works_data:
+        print("⚠️ Brak otwartych prac w D365 dla ADM-01.")
         return
 
+    # Filtrujemy prace, które nie są w kontenerach
     valid_works = [w for w in works_data if str(w.get("ContainerId") or "").strip() == ""]
     unique_orders = list(set(str(w.get("SourceOrderNumber", "")).strip() for w in valid_works if w.get("SourceOrderNumber")))
     
+    # Pobieramy daty Merx w paczkach
     date_map = {}
     chunk_size = 40 
     for i in range(0, len(unique_orders), chunk_size):
@@ -56,15 +74,18 @@ async def sync_works(db: AsyncSession):
             if order_id and raw_date:
                 date_map[order_id] = raw_date.split("T")[0]
 
+    # Upsert do bazy
     for w in valid_works:
         order_num = str(w.get("SourceOrderNumber") or "").strip()
         final_date = None
-        custom_date_str = date_map.get(order_num)
         
+        # 1. Próba daty Merx
+        custom_date_str = date_map.get(order_num)
         if custom_date_str:
             try: final_date = date.fromisoformat(custom_date_str)
             except: pass
-        
+            
+        # 2. Fallback na datę z nagłówka pracy
         if not final_date:
             fallback_dt = w.get("WHAShippingDateRequested", "")
             if fallback_dt:
@@ -81,7 +102,7 @@ async def sync_works(db: AsyncSession):
             work_pool_id=w.get("WarehouseWorkPoolId", ""),
             shipping_date=final_date
         ).on_conflict_do_update(
-            index_elements=['work_id'], 
+            index_elements=['work_id'],
             set_={
                 "zone2": w.get("WHAAdditionalZone2", ""),
                 "item_qty": float(w.get("WHASalesItemQty") or 0),
@@ -92,51 +113,90 @@ async def sync_works(db: AsyncSession):
             }
         )
         await db.execute(stmt)
-        
+    
     await db.commit()
-    print("✅ Prace zsynchronizowane.")
+    print(f"✅ Dynamics OK. Przetworzono {len(valid_works)} prac.")
 
-# --- IMPORT PRODUKTYWNOŚCI (UNIWERSALNY) ---
+# --- IMPORT PRODUKTYWNOŚCI ---
 async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
-    """Zapisuje dane z tabeli Excel/Sheets do bazy danych."""
-    print(f"📊 DEBUG: Kolumny jakie widzę w pliku: {df.columns.tolist()}") # To nam powie prawdę
-    
-    # Próbujemy znaleźć kolumnę login, ignorując wielkość liter
     login_col = next((c for c in df.columns if str(c).lower().strip() == 'login'), None)
-    
-    if not login_col:
-        print("❌ BŁĄD: Nie znalazłem kolumny 'Login' w pliku!")
-        return 0
-
-    print(f"🔎 Używam kolumny '{login_col}' jako loginów.")
-    
+    if not login_col: return 0
     for _, row in df.iterrows():
         login = str(row.get(login_col, '')).strip()
-        if not login or login.lower() == 'nan':
-            continue
-            
+        if not login or login.lower() == 'nan': continue
         stmt = insert(WorkerPerformance).values(
-            login=login,
-            forklift=parse_percent(row.get('FORKLIFT')),
-            packing=parse_percent(row.get('Packing')),
-            picking=parse_percent(row.get('Picking')),
-            putaway=parse_percent(row.get('Putaway')),
-            receiving=parse_percent(row.get('Receiving')),
-            returns=parse_percent(row.get('Returns')),
+            login=login, forklift=parse_percent(row.get('FORKLIFT')), packing=parse_percent(row.get('Packing')),
+            picking=parse_percent(row.get('Picking')), putaway=parse_percent(row.get('Putaway')),
+            receiving=parse_percent(row.get('Receiving')), returns=parse_percent(row.get('Returns')),
             sorting=parse_percent(row.get('Sorting'))
-        ).on_conflict_do_update(
-            index_elements=['login'],
-            set_={
-                "forklift": parse_percent(row.get('FORKLIFT')),
-                "packing": parse_percent(row.get('Packing')),
-                "picking": parse_percent(row.get('Picking')),
-                "putaway": parse_percent(row.get('Putaway')),
-                "receiving": parse_percent(row.get('Receiving')),
-                "returns": parse_percent(row.get('Returns')),
-                "sorting": parse_percent(row.get('Sorting'))
-            }
-        )
+        ).on_conflict_do_update(index_elements=['login'], set_={
+            "forklift": parse_percent(row.get('FORKLIFT')), "packing": parse_percent(row.get('Packing')),
+            "picking": parse_percent(row.get('Picking')), "putaway": parse_percent(row.get('Putaway')),
+            "receiving": parse_percent(row.get('Receiving')), "returns": parse_percent(row.get('Returns')),
+            "sorting": parse_percent(row.get('Sorting'))
+        })
         await db.execute(stmt)
-    
     await db.commit()
     return len(df)
+
+# --- GŁÓWNY SILNIK SYNCHRONIZACJI ---
+async def process_full_system_sync(payload: dict, db: AsyncSession):
+    try:
+        # Zakres: dzisiaj i jutro
+        today = date.today()
+        tomorrow = today + timedelta(days=1)
+        target_dates = [today, tomorrow]
+        
+        print(f"📅 Cel synchronizacji: {today} oraz {tomorrow}")
+
+        # 1. Matryca
+        raw_m = payload.get("matryca", [])
+        if raw_m:
+            df_m = pd.DataFrame(raw_m)
+            idx = next((i for i, r in df_m.iterrows() if r.astype(str).str.contains('Login', case=False).any()), 0)
+            headers_m = [str(c).strip() for c in df_m.iloc[idx]]
+            df_m = pd.DataFrame(df_m.values[idx+1:], columns=headers_m)
+            await import_productivity_data(df_m, db)
+            print("📊 Matryca OK.")
+
+        # 2. Grafik 2026
+        raw_g = payload.get("grafik_2026", [])
+        if not raw_g: return {"status": "error", "message": "Brak danych grafik_2026"}
+        
+        df_g = pd.DataFrame(raw_g)
+        h_idx = next((i for i, r in df_g.iterrows() if r.astype(str).str.contains('Numer Pracownika', case=False).any()), 0)
+        headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
+        df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
+        
+        # Filtr statusu: tylko pracujący
+        if 'Status' in df_g.columns:
+            df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
+            print(f"👥 Aktywnych pracowników do przetworzenia: {len(df_g)}")
+
+        count_sched = 0
+        for _, row in df_g.iterrows():
+            login = str(row.get('Numer Pracownika', '')).strip()
+            if not login or login.lower() == 'nan': continue
+
+            for col_name in headers_g:
+                work_date = flexible_date_parser(col_name)
+                
+                if work_date and work_date in target_dates:
+                    shift = str(row.get(col_name, '')).strip()
+                    if shift and shift.lower() != 'nan' and shift != "":
+                        stmt = insert(Schedule).values(
+                            login=login, work_date=work_date, planned_shift=shift
+                        ).on_conflict_do_update(
+                            index_elements=['login', 'work_date'], 
+                            set_={"planned_shift": shift}
+                        )
+                        await db.execute(stmt)
+                        count_sched += 1
+        
+        await db.commit()
+        print(f"🚀 Sukces! Zsynchronizowano {count_sched} wpisów grafiku.")
+        return {"status": "success", "message": f"Sync OK! Zaktualizowano matrycę i {count_sched} rekordów grafiku."}
+
+    except Exception as e:
+        print(f"❌ Krytyczny błąd: {e}")
+        return {"status": "error", "message": str(e)}

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime# dodaje Date
+from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint# dodaje Date
 from app.db.database import Base
 from datetime import datetime
 
@@ -39,3 +39,16 @@ class WorkerPerformance(Base):
     sorting = Column(Float, default=0.0)
     
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Schedule(Base):
+    __tablename__ = "schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    login = Column(String(50), index=True, nullable=False)
+    work_date = Column(Date, index=True, nullable=False) 
+    planned_shift = Column(String(50))
+    is_present = Column(Boolean, default=False)
+    
+    # To jest kluczowe dla funkcji "upsert" (żeby się nie duplikowało przy ponownym pobraniu)
+    __table_args__ = (UniqueConstraint('login', 'work_date', name='uix_login_date'),)
