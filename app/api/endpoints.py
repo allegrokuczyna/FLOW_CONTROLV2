@@ -6,9 +6,11 @@ from app.db.models import WorkExport, WorkerPerformance, ActiveWork
 from app.services.sync_service import (
     sync_works, 
     process_full_system_sync, 
-    sync_active_works
+    sync_active_works,
+    get_workpool_analytics
 )
 import pandas as pd
+from datetime import datetime, date
 
 # Inicjalizujemy router
 router = APIRouter()
@@ -74,3 +76,18 @@ async def upload_productivity_json(request: Request, db: AsyncSession = Depends(
         return await process_full_system_sync(payload, db)
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+#--------tutaj endpoint z sumami prac, pod ai---------
+
+@router.get("/analytics/workpools")
+async def get_workpool_stats(db: AsyncSession = Depends(get_db)):
+    """Zwraca statystyki obciążenia pracą według pul (np. SORT, PICK, FORKLIFT)."""
+    try:
+        data = await get_workpool_analytics(db)
+        return {
+            "status": "success",
+            "timestamp": date.today().isoformat(),
+            "workpools": data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

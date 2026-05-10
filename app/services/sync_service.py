@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
 from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork
+from sqlalchemy import func, select
 
 # --- INTELIGENTNY PARSER DATY ---
 def flexible_date_parser(text):
@@ -275,3 +276,27 @@ async def sync_active_works(db: AsyncSession):
     
     await db.commit()
     print(f"🚀 Baza zsynchronizowana. Mamy {len(works_data)} aktywnych rekordów.")
+
+
+
+
+async def get_workpool_analytics(db: AsyncSession):
+    query = select(
+        ActiveWork.workpoolid,
+        func.count(ActiveWork.workid).label("tasks_count"),
+        func.sum(ActiveWork.whasalesitemqty).label("total_items")
+    ).group_by(ActiveWork.workpoolid)
+    
+    result = await db.execute(query)
+    rows = result.fetchall()
+    
+    workpool_data = {}
+    for r in rows:
+        wp_id = r[0] if r[0] else "NIEPRZYPISANE"
+        workpool_data[wp_id] = {
+            "tasks": r[1],
+            "items": round(r[2], 2) if r[2] else 0
+        }
+        
+    return workpool_data
+
