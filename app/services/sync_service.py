@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule
+from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork
 
 # --- INTELIGENTNY PARSER DATY ---
 def flexible_date_parser(text):
@@ -13,7 +13,7 @@ def flexible_date_parser(text):
     try:
         ts = pd.to_datetime(text, errors='coerce')
         if pd.isna(ts):
-            # Próba dla polskich skrótów
+            # Próba dla polskich skrótów (np. 01 sty)
             miesiące = {'sty': 1, 'lut': 2, 'mar': 3, 'kwi': 4, 'maj': 5, 'cze': 6,
                         'lip': 7, 'sie': 8, 'wrz': 9, 'paź': 10, 'lis': 11, 'gru': 12}
             parts = str(text).lower().strip().split(' ')
@@ -23,6 +23,7 @@ def flexible_date_parser(text):
                 if month: return date(2026, month, day)
             return None
 
+        # Korekta strefy czasowej (UTC 23:00 -> PL 00:00 dnia następnego)
         if ts.hour == 23:
             ts = ts + timedelta(hours=1)
         return ts.date()
@@ -36,7 +37,7 @@ def parse_percent(val):
         return float(str(val).replace('%', '').replace(',', '.').strip()) / 100.0
     except: return 0.0
 
-# --- POBIERANIE DANYCH Z D365 ---
+# --- POBIERANIE DANYCH Z D365 (Helper) ---
 async def get_data(endpoint_url: str):
     token = await get_d365_access_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -46,21 +47,21 @@ async def get_data(endpoint_url: str):
         response = await client.get(url, headers=headers)
         return response.json().get("value", []) if response.status_code == 200 else []
 
-# --- SYNC PRAC DYNAMICS (PRZYWRÓCONY) ---
+# --- SYNC PRAC DYNAMICS (SNAJPER) ---
 async def sync_works(db: AsyncSession):
     print("🔄 Start synchronizacji prac Dynamics...")
     url_works = "WarehouseWorkHeaders?cross-company=true&$filter=WarehouseId eq 'ADM-01' and WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open'&$top=2000"
     
     works_data = await get_data(url_works)
     if not works_data:
-        print("⚠️ Brak otwartych prac w D365 dla ADM-01.")
+        print("⚠️ Brak otwartych prac w D365 dla magazynu ADM-01.")
         return
 
-    # Filtrujemy prace, które nie są w kontenerach
+    # 1. Filtrujemy prace (pomijamy te w kontenerach)
     valid_works = [w for w in works_data if str(w.get("ContainerId") or "").strip() == ""]
     unique_orders = list(set(str(w.get("SourceOrderNumber", "")).strip() for w in valid_works if w.get("SourceOrderNumber")))
     
-    # Pobieramy daty Merx w paczkach
+    # 2. Pobieramy daty wysyłki Merx w paczkach po 40 sztuk
     date_map = {}
     chunk_size = 40 
     for i in range(0, len(unique_orders), chunk_size):
@@ -74,18 +75,17 @@ async def sync_works(db: AsyncSession):
             if order_id and raw_date:
                 date_map[order_id] = raw_date.split("T")[0]
 
-    # Upsert do bazy
+    # 3. Zapis/Aktualizacja w bazie (Upsert)
     for w in valid_works:
         order_num = str(w.get("SourceOrderNumber") or "").strip()
         final_date = None
         
-        # 1. Próba daty Merx
+        # Próba uzyskania daty z Merx, potem fallback na nagłówek pracy
         custom_date_str = date_map.get(order_num)
         if custom_date_str:
             try: final_date = date.fromisoformat(custom_date_str)
             except: pass
             
-        # 2. Fallback na datę z nagłówka pracy
         if not final_date:
             fallback_dt = w.get("WHAShippingDateRequested", "")
             if fallback_dt:
@@ -115,9 +115,9 @@ async def sync_works(db: AsyncSession):
         await db.execute(stmt)
     
     await db.commit()
-    print(f"✅ Dynamics OK. Przetworzono {len(valid_works)} prac.")
+    print(f"✅ Dynamics OK. Zsynchronizowano {len(valid_works)} prac.")
 
-# --- IMPORT PRODUKTYWNOŚCI ---
+# --- IMPORT WYDAJNOŚCI (MATRYCA) ---
 async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
     login_col = next((c for c in df.columns if str(c).lower().strip() == 'login'), None)
     if not login_col: return 0
@@ -125,31 +125,37 @@ async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
         login = str(row.get(login_col, '')).strip()
         if not login or login.lower() == 'nan': continue
         stmt = insert(WorkerPerformance).values(
-            login=login, forklift=parse_percent(row.get('FORKLIFT')), packing=parse_percent(row.get('Packing')),
-            picking=parse_percent(row.get('Picking')), putaway=parse_percent(row.get('Putaway')),
-            receiving=parse_percent(row.get('Receiving')), returns=parse_percent(row.get('Returns')),
+            login=login, 
+            forklift=parse_percent(row.get('FORKLIFT')), 
+            packing=parse_percent(row.get('Packing')),
+            picking=parse_percent(row.get('Picking')), 
+            putaway=parse_percent(row.get('Putaway')),
+            receiving=parse_percent(row.get('Receiving')), 
+            returns=parse_percent(row.get('Returns')),
             sorting=parse_percent(row.get('Sorting'))
         ).on_conflict_do_update(index_elements=['login'], set_={
-            "forklift": parse_percent(row.get('FORKLIFT')), "packing": parse_percent(row.get('Packing')),
-            "picking": parse_percent(row.get('Picking')), "putaway": parse_percent(row.get('Putaway')),
-            "receiving": parse_percent(row.get('Receiving')), "returns": parse_percent(row.get('Returns')),
+            "forklift": parse_percent(row.get('FORKLIFT')), 
+            "packing": parse_percent(row.get('Packing')),
+            "picking": parse_percent(row.get('Picking')), 
+            "putaway": parse_percent(row.get('Putaway')),
+            "receiving": parse_percent(row.get('Receiving')), 
+            "returns": parse_percent(row.get('Returns')),
             "sorting": parse_percent(row.get('Sorting'))
         })
         await db.execute(stmt)
     await db.commit()
     return len(df)
 
-# --- GŁÓWNY SILNIK SYNCHRONIZACJI ---
+# --- ZBIORCZA SYNCHRONIZACJA (FULL SYSTEM) ---
 async def process_full_system_sync(payload: dict, db: AsyncSession):
     try:
-        # Zakres: dzisiaj i jutro
         today = date.today()
         tomorrow = today + timedelta(days=1)
         target_dates = [today, tomorrow]
         
-        print(f"📅 Cel synchronizacji: {today} oraz {tomorrow}")
+        print(f"📅 Cel synchronizacji grafiku: {today} oraz {tomorrow}")
 
-        # 1. Matryca
+        # 1. Przetwarzanie Matrycy
         raw_m = payload.get("matryca", [])
         if raw_m:
             df_m = pd.DataFrame(raw_m)
@@ -157,9 +163,9 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
             headers_m = [str(c).strip() for c in df_m.iloc[idx]]
             df_m = pd.DataFrame(df_m.values[idx+1:], columns=headers_m)
             await import_productivity_data(df_m, db)
-            print("📊 Matryca OK.")
+            print("📊 Matryca zaktualizowana.")
 
-        # 2. Grafik 2026
+        # 2. Przetwarzanie Grafiku
         raw_g = payload.get("grafik_2026", [])
         if not raw_g: return {"status": "error", "message": "Brak danych grafik_2026"}
         
@@ -168,10 +174,10 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
         headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
         df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
         
-        # Filtr statusu: tylko pracujący
+        # Filtr: tylko pracownicy ze statusem "pracuje"
         if 'Status' in df_g.columns:
             df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
-            print(f"👥 Aktywnych pracowników do przetworzenia: {len(df_g)}")
+            print(f"👥 Pracowników do przetworzenia: {len(df_g)}")
 
         count_sched = 0
         for _, row in df_g.iterrows():
@@ -181,6 +187,7 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
             for col_name in headers_g:
                 work_date = flexible_date_parser(col_name)
                 
+                # Zapisujemy tylko jeśli kolumna to data i mieści się w zakresie dziś/jutro
                 if work_date and work_date in target_dates:
                     shift = str(row.get(col_name, '')).strip()
                     if shift and shift.lower() != 'nan' and shift != "":
@@ -194,9 +201,77 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
                         count_sched += 1
         
         await db.commit()
-        print(f"🚀 Sukces! Zsynchronizowano {count_sched} wpisów grafiku.")
-        return {"status": "success", "message": f"Sync OK! Zaktualizowano matrycę i {count_sched} rekordów grafiku."}
+        print(f"🚀 Sukces! Zapisano {count_sched} wpisów grafiku.")
+        return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} rekordów grafiku."}
 
     except Exception as e:
-        print(f"❌ Krytyczny błąd: {e}")
+        print(f"❌ Krytyczny błąd podczas sync: {e}")
         return {"status": "error", "message": str(e)}
+    
+# --- POBRANIE WSYZSTKICH PRAC 1 I 2, OTWÓRZ I W TOKU. ---
+
+
+async def sync_active_works(db: AsyncSession):
+    print("📡 Rozpoczynam pełny zrzut WHSWorkTable (Open/InProcess)...")
+    
+    # Twoje zapytanie SQL: workstatus in (0,1) -> Open, InProcess
+    filter_query = (
+        "WarehouseId eq 'ADM-01' and ("
+        "WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or "
+        "WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess'"
+        ")"
+    )
+    endpoint = f"WarehouseWorkHeaders?cross-company=true&$filter={filter_query}"
+    works_data = await get_data(endpoint)
+    
+    if not works_data:
+        print("ℹ️ Brak aktywnych prac.")
+        return
+
+    for w in works_data:
+        # Konwersja dat ISO na obiekty datetime
+        def p_date(val):
+            if not val: return None
+            try: return pd.to_datetime(val)
+            except: return None
+
+        #  dane do bazy (Upsert)
+        stmt = insert(ActiveWork).values(
+            workid=w.get("WarehouseWorkId"),
+            ordernum=w.get("SourceOrderNumber"),
+            shipmentid=w.get("WHAShipmentId"),
+            loadid=w.get("WHALoadId"),
+            waveid=w.get("WHAWaveId"),
+            workpoolid=w.get("WarehouseWorkPoolId"),
+            workstatus=str(w.get("WarehouseWorkStatus")),
+            worktranstype=w.get("WorkTransactionType"),
+            whasalesitemqty=float(w.get("WHASalesItemQty") or 0),
+            whasalesitemcount=int(w.get("WHASalesItemCount") or 0),
+            whashippingdaterequested=p_date(w.get("WHAShippingDateRequested")),
+            whasaleswarehouseshippingdate=p_date(w.get("WHASalesWarehouseShippingDate")),
+            workcreateddatetime=p_date(w.get("CreatedDateTime")),
+            lockeduser=w.get("UserId"),
+            whaadditionalzone2=w.get("WHAAdditionalZone2"),
+            whacarriercode=w.get("WHACarrierCode"),
+            whashipmentspecid=w.get("WHAShipmentSpecId"),
+            targetlicenseplateid=w.get("TargetLicensePlateId"),
+            inventlocationid=w.get("WarehouseId"),
+            inventsiteid=w.get("SiteId"),
+            workpriority=int(w.get("WorkPriority") or 0),
+            worktemplatecode=w.get("WorkTemplateCode"),
+            dataareaid=w.get("dataAreaId")
+        ).on_conflict_do_update(
+            index_elements=['workid'],
+            set_={
+                "workstatus": str(w.get("WarehouseWorkStatus")),
+                "lockeduser": w.get("UserId"),
+                "whasalesitemqty": float(w.get("WHASalesItemQty") or 0),
+                "whasaleswarehouseshippingdate": p_date(w.get("WHASalesWarehouseShippingDate")),
+                "whaadditionalzone2": w.get("WHAAdditionalZone2"),
+                "whacarriercode": w.get("WHACarrierCode")
+            }
+        )
+        await db.execute(stmt)
+    
+    await db.commit()
+    print(f"🚀 Baza zsynchronizowana. Mamy {len(works_data)} aktywnych rekordów.")

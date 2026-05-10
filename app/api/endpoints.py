@@ -1,86 +1,76 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.database import get_db
-from app.db.models import WorkExport, WorkerPerformance
-from app.services.sync_service import sync_works, import_productivity_data, process_full_system_sync
-import io
+from app.db.models import WorkExport, WorkerPerformance, ActiveWork
+from app.services.sync_service import (
+    sync_works, 
+    process_full_system_sync, 
+    sync_active_works
+)
 import pandas as pd
 
-# Inicjalizujemy router dla endpointów
+# Inicjalizujemy router
 router = APIRouter()
 
-# --- SYNC DANYCH Z DYNAMICS 365 ---
+# --- 1. SYNCHRONIZACJA PRAC (DYNAMICS 365 - ARCHIWUM/GŁÓWNE) ---
 @router.post("/sync/works")
 async def trigger_sync_works(db: AsyncSession = Depends(get_db)):
-    """Synchronizacja prac magazynowych wraz z datami Merx."""
+    """Pobiera otwarte prace i zapisuje w głównym eksporcie."""
     try:
         await sync_works(db)
-        return {"status": "success", "message": "Lista prac zaktualizowana pomyślnie."}
+        return {"status": "success", "message": "Główna lista prac zaktualizowana."}
     except Exception as e:
-        print(f"❌ Błąd podczas synchronizacji: {e}")
-        raise HTTPException(status_code=500, detail=f"Błąd sync prac: {str(e)}")
+        print(f"❌ Błąd sync_works: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- POBIERANIE PRAC (DLA DASHBOARDU) ---
+# --- 2. LIVE SYNC: WHSWorkTable (STAN AKTYWNY 0,1) ---
+@router.post("/sync/active_status")
+async def trigger_active_sync(db: AsyncSession = Depends(get_db)):
+    """
+    Kluczowy endpoint operacyjny. 
+    Pobiera wszystkie kolumny dla prac Open (0) i InProcess (1).
+    """
+    try:
+        await sync_active_works(db)
+        return {"status": "success", "message": "Stan aktywnych prac (WHSWorkTable) odświeżony."}
+    except Exception as e:
+        print(f"❌ Błąd active_sync: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 3. POBIERANIE DANYCH DLA DASHBOARDU ---
+@router.get("/active_data")
+async def get_active_work_data(db: AsyncSession = Depends(get_db)):
+    """Zwraca 'żywe' dane o pracach Open/InProcess do wyświetlenia na stronie."""
+    result = await db.execute(select(ActiveWork))
+    return result.scalars().all()
+
 @router.get("/data")
 async def get_exported_data(db: AsyncSession = Depends(get_db)):
-    """Pobiera zsynchronizowane prace z naszej bazy."""
+    """Pobiera dane z głównej tabeli eksportu."""
     result = await db.execute(select(WorkExport))
     return result.scalars().all()
 
-# --- IMPORT WYDAJNOŚCI Z PLIKU ---
-@router.post("/upload/productivity_json")
-async def upload_productivity_json(request: Request, db: AsyncSession = Depends(get_db)):
-    """Odbiera dane produktywności i inteligentnie szuka nagłówka 'Login'."""
-    try:
-        body = await request.json()
-        raw_data = body.get("data", [])
-        
-        if not raw_data:
-            return {"status": "error", "message": "Brak danych z Google Sheets."}
-
-        # 1. Tworzymy surową tabelę z tego, co przysłał Google
-        df_raw = pd.DataFrame(raw_data)
-        
-        # 2. Szukamy, w którym wierszu jest nagłówek "Login"
-        header_row_index = 0
-        found = False
-        for i, row in df_raw.iterrows():
-            if row.astype(str).str.contains('Login', case=False).any():
-                header_row_index = i
-                found = True
-                break
-        
-        if not found:
-            print("❌ BŁĄD: W przesłanym arkuszu nie znaleziono kolumny 'Login'!")
-            return {"status": "error", "message": "Nie znaleziono kolumny 'Login'."}
-
-        # 3. Wycinamy dane: wiersz z nagłówkiem 
-        new_header = df_raw.iloc[header_row_index]
-        df = pd.DataFrame(df_raw.values[header_row_index + 1:], columns=new_header)
-        
-        # Czyścimy nazwy kolumn ze spacji
-        df.columns = [str(c).strip() for c in df.columns]
-        
-        print(f"🎯 Znaleziono nagłówki w wierszu {header_row_index}. Kolumny: {df.columns.tolist()}")
-
-        # 4. Przesyłamy do serwisu
-        count = await import_productivity_data(df, db)
-        
-        return {"status": "success", "message": f"Zsynchronizowano {count} rekordów."}
-        
-    except Exception as e:
-        print(f"❌ Błąd odbiornika: {e}")
-        return {"status": "error", "message": str(e)}
-
-# --- PODGLĄD WYDAJNOŚCI ---
 @router.get("/productivity")
 async def get_worker_performance(db: AsyncSession = Depends(get_db)):
-    """Pobiera listę wydajności wszystkich pracowników z bazy."""
+    """Zwraca wydajność pracowników (Matryca)."""
     result = await db.execute(select(WorkerPerformance))
     return result.scalars().all()
 
-# --- GŁÓWNY ENDPOINT SYNCHRONIZACJI SYSTEMU ---
+# --- 4. GŁÓWNA SYNCHRONIZACJA (GOOGLE SHEETS: GRAFIK + MATRYCA) ---
 @router.post("/sync/full_system/")
 async def full_system_sync(payload: dict, db: AsyncSession = Depends(get_db)):
+    """Odbiera paczkę z Google i aktualizuje Grafik oraz Matrycę."""
     return await process_full_system_sync(payload, db)
+
+# --- 5. LEGACY UPLOAD (SAMODZIELNA MATRYCA) ---
+@router.post("/upload/productivity_json")
+async def upload_productivity_json(request: Request, db: AsyncSession = Depends(get_db)):
+    """Dla kompatybilności - przesyła samą matrycę."""
+    try:
+        body = await request.json()
+        raw_data = body.get("data", [])
+        payload = {"matryca": raw_data, "grafik_2026": []}
+        return await process_full_system_sync(payload, db)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

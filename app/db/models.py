@@ -52,3 +52,60 @@ class Schedule(Base):
     
     # To jest kluczowe dla funkcji "upsert" (żeby się nie duplikowało przy ponownym pobraniu)
     __table_args__ = (UniqueConstraint('login', 'work_date', name='uix_login_date'),)
+
+
+
+class ActiveWork(Base):
+    __tablename__ = "active_works"
+
+    # Klucz główny
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Podstawowe identyfikatory
+    workid = Column(String, unique=True, index=True)
+    ordernum = Column(String, index=True)
+    shipmentid = Column(String, index=True)
+    loadid = Column(String, index=True)
+    waveid = Column(String, index=True)
+    workpoolid = Column(String, index=True)
+    
+    # Statusy i typy
+    workstatus = Column(String)  
+    worktranstype = Column(String)
+    
+    # Ilości
+    whasalesitemqty = Column(Float)
+    whasalesitemcount = Column(Integer)
+    whaworkitemsvolume = Column(Float)
+    whaworkitemsweight = Column(Float)
+    
+    # Daty i Czas 
+    whashippingdaterequested = Column(DateTime(timezone=True), nullable=True)
+    whasaleswarehouseshippingdate = Column(DateTime(timezone=True), nullable=True)
+    workcreateddatetime = Column(DateTime(timezone=True), nullable=True)
+    workinprocessutcdatetime = Column(DateTime(timezone=True), nullable=True)
+    workclosedutcdatetime = Column(DateTime(timezone=True), nullable=True)
+    
+    # Operacyjne
+    lockeduser = Column(String, nullable=True) # UserId
+    whaadditionalzone2 = Column(String, nullable=True) # Strefa
+    whacarriercode = Column(String, nullable=True)
+    whashipmentspecid = Column(String, nullable=True)
+    targetlicenseplateid = Column(String, nullable=True)
+    inventlocationid = Column(String)
+    inventsiteid = Column(String)
+    
+    # Flagi (Boolean)
+    workismultisku = Column(String) # D365 często zwraca "Yes"/"No"
+    frozen = Column(String)
+    
+    # Pozostałe
+    workpriority = Column(Integer)
+    worktemplatecode = Column(String)
+    containerid = Column(String)
+    clusterid = Column(String)
+    dataareaid = Column(String) # Firma (np. 'merx')
+    
+    # Meta-dane synchronizacji
+    sinkmodifiedon = Column(DateTime(timezone=True), nullable=True)
+    lastprocessedchange_datetime = Column(DateTime(timezone=True), nullable=True)
