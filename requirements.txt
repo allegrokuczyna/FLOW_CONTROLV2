@@ -1,7 +1,22 @@
+# --- SERWER I API ---
 fastapi
-uvicorn
-sqlalchemy
-asyncpg
-httpx
+uvicorn[standard]
+python-multipart
 pydantic-settings
+httpx
+
+# --- BAZA DANYCH (POSTGRESQL) ---
+sqlalchemy
+
+psycopg
+
+# --- PRZETWARZANIE DANYCH ---
+pandas
+
+openpyxl
+
+# --- SZTUCZNA INTELIGENCJA ---
+ollama
+
+# --- NARZĘDZIA POMOCNICZE ---
 python-dotenv

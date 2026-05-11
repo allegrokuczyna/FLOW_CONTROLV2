@@ -4,7 +4,6 @@ from app.core.config import settings
 async def get_d365_access_token() -> str:
     auth_url = f"https://login.microsoftonline.com/{settings.D365_TENANT_ID}/oauth2/v2.0/token"
     
-    # Dynamics 365 zazwyczaj wymaga resource jako .default z URL
     scope = f"{settings.D365_URL.rstrip('/')}/.default"
     
     payload = {

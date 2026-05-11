@@ -1,3 +1,15 @@
+import asyncio
+import sys
+import selectors
+
+
+if sys.platform == 'win32':
+    selector = selectors.SelectSelector()
+    loop = asyncio.SelectorEventLoop(selector)
+    asyncio.set_event_loop(loop)
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.db.database import engine, Base
