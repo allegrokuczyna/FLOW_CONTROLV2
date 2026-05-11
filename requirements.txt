@@ -20,3 +20,6 @@ ollama
 
 # --- NARZĘDZIA POMOCNICZE ---
 python-dotenv
+
+passlib[bcrypt]
+python-jose[cryptography]

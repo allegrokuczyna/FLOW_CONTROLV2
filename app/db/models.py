@@ -2,6 +2,15 @@ from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, 
 from app.db.database import Base
 from datetime import datetime
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, default="WEB_USER") #sztywno web_user, 
+    is_active = Column(Boolean, default=False)
+
+
 class WorkExport(Base):
     __tablename__ = "work_exports"
 
