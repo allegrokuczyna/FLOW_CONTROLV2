@@ -1,6 +1,6 @@
 import httpx
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, time  # <--- DODANO 'time' i 'datetime'
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
@@ -32,11 +32,25 @@ def flexible_date_parser(text):
         return None
 
 # --- POMOCNIK: PARSOWANIE PROCENTÓW ---
-def parse_percent(val):
-    if pd.isna(val) or val == "": return 0.0
+def parse_percent(value):
+    if value is None or str(value).lower() in ['nan', '', 'none']:
+        return 0.0
+    
     try:
-        return float(str(val).replace('%', '').replace(',', '.').strip()) / 100.0
-    except: return 0.0
+        if isinstance(value, (int, float)):
+            if value > 5.0: 
+                return float(value) / 100.0
+            return float(value)
+        val_str = str(value).replace(',', '.').strip()
+        has_percent_sign = '%' in val_str
+        val_str = val_str.replace('%', '')
+        val = float(val_str)
+        if has_percent_sign or val > 5.0:
+            return val / 100.0
+        return val
+    except Exception as e:
+        print(f"⚠️ Błąd parsowania: {value} -> {e}")
+        return 0.0
 
 # --- POBIERANIE DANYCH Z D365 (Helper) ---
 async def get_data(endpoint_url: str):
@@ -58,11 +72,9 @@ async def sync_works(db: AsyncSession):
         print("⚠️ Brak otwartych prac w D365 dla magazynu ADM-01.")
         return
 
-    # 1. Filtrujemy prace (pomijamy te w kontenerach)
     valid_works = [w for w in works_data if str(w.get("ContainerId") or "").strip() == ""]
     unique_orders = list(set(str(w.get("SourceOrderNumber", "")).strip() for w in valid_works if w.get("SourceOrderNumber")))
     
-    # 2. Pobieramy daty wysyłki Merx w paczkach po 40 sztuk
     date_map = {}
     chunk_size = 40 
     for i in range(0, len(unique_orders), chunk_size):
@@ -76,12 +88,9 @@ async def sync_works(db: AsyncSession):
             if order_id and raw_date:
                 date_map[order_id] = raw_date.split("T")[0]
 
-    # 3. Zapis/Aktualizacja w bazie (Upsert)
     for w in valid_works:
         order_num = str(w.get("SourceOrderNumber") or "").strip()
         final_date = None
-        
-        # Próba uzyskania daty z Merx, potem fallback na nagłówek pracy
         custom_date_str = date_map.get(order_num)
         if custom_date_str:
             try: final_date = date.fromisoformat(custom_date_str)
@@ -120,32 +129,34 @@ async def sync_works(db: AsyncSession):
 
 # --- IMPORT WYDAJNOŚCI (MATRYCA) ---
 async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
-    login_col = next((c for c in df.columns if str(c).lower().strip() == 'login'), None)
+    df_cols = {str(c).lower().strip(): c for c in df.columns}
+    def get_val(row, col_name):
+        actual_col = df_cols.get(col_name.lower())
+        return parse_percent(row.get(actual_col)) if actual_col else 0.0
+
+    login_col = df_cols.get('login')
     if not login_col: return 0
+
+    import_count = 0
     for _, row in df.iterrows():
         login = str(row.get(login_col, '')).strip()
         if not login or login.lower() == 'nan': continue
-        stmt = insert(WorkerPerformance).values(
-            login=login, 
-            forklift=parse_percent(row.get('FORKLIFT')), 
-            packing=parse_percent(row.get('Packing')),
-            picking=parse_percent(row.get('Picking')), 
-            putaway=parse_percent(row.get('Putaway')),
-            receiving=parse_percent(row.get('Receiving')), 
-            returns=parse_percent(row.get('Returns')),
-            sorting=parse_percent(row.get('Sorting'))
-        ).on_conflict_do_update(index_elements=['login'], set_={
-            "forklift": parse_percent(row.get('FORKLIFT')), 
-            "packing": parse_percent(row.get('Packing')),
-            "picking": parse_percent(row.get('Picking')), 
-            "putaway": parse_percent(row.get('Putaway')),
-            "receiving": parse_percent(row.get('Receiving')), 
-            "returns": parse_percent(row.get('Returns')),
-            "sorting": parse_percent(row.get('Sorting'))
-        })
+        vals = {
+            "forklift": get_val(row, 'forklift'),
+            "packing": get_val(row, 'packing'),
+            "picking": get_val(row, 'picking'),
+            "putaway": get_val(row, 'putaway'),
+            "receiving": get_val(row, 'receiving'),
+            "returns": get_val(row, 'returns'),
+            "sorting": get_val(row, 'sorting')
+        }
+        stmt = insert(WorkerPerformance).values(login=login, **vals).on_conflict_do_update(
+            index_elements=['login'], set_=vals
+        )
         await db.execute(stmt)
+        import_count += 1
     await db.commit()
-    return len(df)
+    return import_count
 
 # --- ZBIORCZA SYNCHRONIZACJA (FULL SYSTEM) ---
 async def process_full_system_sync(payload: dict, db: AsyncSession):
@@ -154,9 +165,6 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
         tomorrow = today + timedelta(days=1)
         target_dates = [today, tomorrow]
         
-        print(f"📅 Cel synchronizacji grafiku: {today} oraz {tomorrow}")
-
-        # 1. Przetwarzanie Matrycy
         raw_m = payload.get("matryca", [])
         if raw_m:
             df_m = pd.DataFrame(raw_m)
@@ -164,9 +172,7 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
             headers_m = [str(c).strip() for c in df_m.iloc[idx]]
             df_m = pd.DataFrame(df_m.values[idx+1:], columns=headers_m)
             await import_productivity_data(df_m, db)
-            print("📊 Matryca zaktualizowana.")
 
-        # 2. Przetwarzanie Grafiku
         raw_g = payload.get("grafik_2026", [])
         if not raw_g: return {"status": "error", "message": "Brak danych grafik_2026"}
         
@@ -175,68 +181,49 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
         headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
         df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
         
-        # Filtr: tylko pracownicy ze statusem "pracuje"
+        prefix_col_name = next((c for c in df_g.columns if 'Prefiks Grupy' in str(c)), None)
+
         if 'Status' in df_g.columns:
             df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
-            print(f"👥 Pracowników do przetworzenia: {len(df_g)}")
 
         count_sched = 0
         for _, row in df_g.iterrows():
             login = str(row.get('Numer Pracownika', '')).strip()
             if not login or login.lower() == 'nan': continue
+            group_prefix = str(row.get(prefix_col_name, '')).strip() if prefix_col_name else ""
 
             for col_name in headers_g:
                 work_date = flexible_date_parser(col_name)
-                
-                # Zapisujemy tylko jeśli kolumna to data i mieści się w zakresie dziś/jutro
                 if work_date and work_date in target_dates:
                     shift = str(row.get(col_name, '')).strip()
                     if shift and shift.lower() != 'nan' and shift != "":
                         stmt = insert(Schedule).values(
-                            login=login, work_date=work_date, planned_shift=shift
+                            login=login, work_date=work_date, planned_shift=shift, group_prefix=group_prefix
                         ).on_conflict_do_update(
                             index_elements=['login', 'work_date'], 
-                            set_={"planned_shift": shift}
+                            set_={"planned_shift": shift, "group_prefix": group_prefix}
                         )
                         await db.execute(stmt)
                         count_sched += 1
         
         await db.commit()
-        print(f"🚀 Sukces! Zapisano {count_sched} wpisów grafiku.")
-        return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} rekordów grafiku."}
-
+        return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} rekordów."}
     except Exception as e:
-        print(f"❌ Krytyczny błąd podczas sync: {e}")
         return {"status": "error", "message": str(e)}
-    
-# --- POBRANIE WSYZSTKICH PRAC 1 I 2, OTWÓRZ I W TOKU. ---
 
-
+# --- SYNC AKTYWNYCH PRAC ---
 async def sync_active_works(db: AsyncSession):
-    print("📡 Rozpoczynam pełny zrzut WHSWorkTable (Open/InProcess)...")
-    
-    # Twoje zapytanie SQL: workstatus in (0,1) -> Open, InProcess
-    filter_query = (
-        "WarehouseId eq 'ADM-01' and ("
-        "WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or "
-        "WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess'"
-        ")"
-    )
+    filter_query = "WarehouseId eq 'ADM-01' and (WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess')"
     endpoint = f"WarehouseWorkHeaders?cross-company=true&$filter={filter_query}"
     works_data = await get_data(endpoint)
-    
-    if not works_data:
-        print("ℹ️ Brak aktywnych prac.")
-        return
+    if not works_data: return
 
     for w in works_data:
-        # Konwersja dat ISO na obiekty datetime
         def p_date(val):
             if not val: return None
             try: return pd.to_datetime(val)
             except: return None
 
-        #  dane do bazy (Upsert)
         stmt = insert(ActiveWork).values(
             workid=w.get("WarehouseWorkId"),
             ordernum=w.get("SourceOrderNumber"),
@@ -273,30 +260,45 @@ async def sync_active_works(db: AsyncSession):
             }
         )
         await db.execute(stmt)
-    
     await db.commit()
-    print(f"🚀 Baza zsynchronizowana. Mamy {len(works_data)} aktywnych rekordów.")
 
-
-
-
+# --- ANALITYKA WORKPOOL ---
 async def get_workpool_analytics(db: AsyncSession):
     query = select(
         ActiveWork.workpoolid,
         func.count(ActiveWork.workid).label("tasks_count"),
         func.sum(ActiveWork.whasalesitemqty).label("total_items")
     ).group_by(ActiveWork.workpoolid)
-    
     result = await db.execute(query)
     rows = result.fetchall()
-    
     workpool_data = {}
     for r in rows:
         wp_id = r[0] if r[0] else "NIEPRZYPISANE"
-        workpool_data[wp_id] = {
-            "tasks": r[1],
-            "items": round(r[2], 2) if r[2] else 0
-        }
-        
+        workpool_data[wp_id] = {"tasks": r[1], "items": round(r[2], 2) if r[2] else 0}
     return workpool_data
 
+# --- NOWOŚĆ: FUNKCJA SPRAWDZAJĄCA ZMIANĘ ---
+def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
+    """Sprawdza, czy aktualna godzina mieści się w widełkach zmiany (np. '06:00-14:00')."""
+    try:
+        if not shift_str or '-' not in str(shift_str):
+            return False
+        
+        clean_shift = str(shift_str).replace(' ', '')
+        start_str, end_str = clean_shift.split('-')
+        
+        def parse_time(t_str):
+            parts = t_str.split(':')
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return time(h, m)
+
+        start_time = parse_time(start_str)
+        end_time = parse_time(end_str)
+
+        if start_time <= end_time:
+            return start_time <= current_time <= end_time
+        else:
+            return current_time >= start_time or current_time <= end_time
+    except:
+        return False

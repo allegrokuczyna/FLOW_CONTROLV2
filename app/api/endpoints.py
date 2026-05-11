@@ -11,6 +11,7 @@ from app.services.sync_service import (
 )
 import pandas as pd
 from datetime import datetime, date
+from app.services.ai_service import get_ai_warehouse_advice #pobranie ai|_service do generowania odpowiedzi.
 
 # Inicjalizujemy router
 router = APIRouter()
@@ -91,3 +92,10 @@ async def get_workpool_stats(db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+# --- 6 AI: weryfikacja nakładu pracy ---
+
+@router.get("/ai/_menager_report")
+async def ai_menager_report(db: AsyncSession = Depends(get_db)):
+    return await get_ai_warehouse_advice(db)
