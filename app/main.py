@@ -15,6 +15,8 @@ from fastapi import FastAPI
 from app.db.database import engine, Base
 from app.api.endpoints import router as api_router
 import app.db.models 
+from fastapi.middleware.cors import CORSMiddleware
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,3 +35,11 @@ app.include_router(api_router)
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Witaj w Flow Control V2!"}
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
