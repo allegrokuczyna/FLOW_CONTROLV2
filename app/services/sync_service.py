@@ -1,6 +1,6 @@
 import httpx
 import pandas as pd
-from datetime import date, timedelta, datetime, time  # <--- DODANO 'time' i 'datetime'
+from datetime import date, timedelta, datetime, time  
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
@@ -180,9 +180,9 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
         headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
         df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
         
-        print(f"📋 Nagłówki, które widzę: {headers_g[:15]}...") # Widzimy pierwsze 15 nagłówków (daty!)
+        print(f"📋 Nagłówki, które widzę: {headers_g[:15]}...") 
 
-        # 2. FILTROWANIE STATUSU (uproszczone, bo App Script już to zrobił)
+        # 2. FILTROWANIE STATUSU
         if 'Status' in df_g.columns:
             initial_count = len(df_g)
             df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
@@ -202,7 +202,6 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
             # 4. PĘTLA PO KOLUMNACH (DATY)
             for col_name in headers_g:
                 work_date = flexible_date_parser(col_name)
-                
                 
                 if work_date:
                     if work_date in target_dates:
@@ -277,20 +276,57 @@ async def sync_active_works(db: AsyncSession):
         await db.execute(stmt)
     await db.commit()
 
-# --- ANALITYKA WORKPOOL ---
+# --- POPRAWIONA ANALITYKA WORKPOOL (TŁUMACZ D365) ---
 async def get_workpool_analytics(db: AsyncSession):
-    query = select(
-        ActiveWork.workpoolid,
-        func.count(ActiveWork.workid).label("tasks_count"),
-        func.sum(ActiveWork.whasalesitemqty).label("total_items")
-    ).group_by(ActiveWork.workpoolid)
-    result = await db.execute(query)
-    rows = result.fetchall()
-    workpool_data = {}
-    for r in rows:
-        wp_id = r[0] if r[0] else "NIEPRZYPISANE"
-        workpool_data[wp_id] = {"tasks": r[1], "items": round(r[2], 2) if r[2] else 0}
-    return workpool_data
+    """
+    Pobiera dane z ActiveWork, tłumaczy żargon D365 na zrozumiałe dla Reacta strefy
+    i sumuje ilość sztuk dla każdej ze stref.
+    """
+    # 1. Pobieramy tylko prace Otwarte i W toku, rzutując na różne możliwe zapisy API
+    stmt = select(ActiveWork).where(
+        ActiveWork.workstatus.in_(['0', '1', 'Open', 'InProcess', '0.0', '1.0'])
+    )
+    result = await db.execute(stmt)
+    active_works = result.scalars().all()
+
+    # 2. Inicjalizujemy bazową strukturę dla frontendu
+    stats = {
+        "picking": 0,
+        "packing": 0,
+        "inbound": 0,
+        "putaway": 0,
+        "sorting": 0
+    }
+
+    # 3. Kategoryzacja w pętli
+    for work in active_works:
+        qty = work.whasalesitemqty if work.whasalesitemqty else 1 
+        
+        w_type = str(work.worktranstype).lower() if work.worktranstype else ""
+        w_template = str(work.worktemplatecode).lower() if work.worktemplatecode else ""
+        w_pool = str(work.workpoolid).lower() if work.workpoolid else ""
+
+        # A) Wychodzące (Sales, TransferIssue)
+        if 'sales' in w_type or 'issue' in w_type:
+            if 'pack' in w_template or 'pack' in w_pool:
+                stats['packing'] += qty
+            elif 'sort' in w_template or 'sort' in w_pool:
+                stats['sorting'] += qty
+            else:
+                stats['picking'] += qty
+                
+        # B) Przychodzące (Purch, TransferReceipt)
+        elif 'purch' in w_type or 'receipt' in w_type:
+            if 'put' in w_template:
+                stats['putaway'] += qty
+            else:
+                stats['inbound'] += qty
+                
+        # C) Fallback
+        else:
+            stats['picking'] += qty
+
+    return stats
 
 # --- NOWOŚĆ: FUNKCJA SPRAWDZAJĄCA ZMIANĘ ---
 def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
@@ -318,9 +354,6 @@ def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
     except:
         return False
 
-
-
-#------------tymczasowa funkcja
 def get_shift_number(hours_str: str) -> str:
     """Mapuje formaty np. '06-14', '14-22' na numery zmian 1, 2, 3."""
     if not hours_str: 
@@ -380,7 +413,7 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
         return plan_data
     except Exception as e:
         print(f"❌ KRYTYCZNY BŁĄD W GET_DAILY_PLAN: {str(e)}")
-        raise e  # Przekazujemy błąd wyżej, żeby endpoint go wyłapał
+        raise e 
 
 # --- NOWOŚĆ: ZAPISYWANIE PLANU DO BAZY ---
 async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date = None):
@@ -390,7 +423,7 @@ async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date
 
         count = 0
         for item in assignments:
-           
+            
             stmt = insert(ShiftAssignment).values(
                 worker_login=item['worker_login'],
                 shift=item['shift'],
