@@ -278,53 +278,42 @@ async def sync_active_works(db: AsyncSession):
 
 # --- POPRAWIONA ANALITYKA WORKPOOL (TŁUMACZ D365) ---
 async def get_workpool_analytics(db: AsyncSession):
-    """
-    Pobiera dane z ActiveWork, tłumaczy żargon D365 na zrozumiałe dla Reacta strefy
-    i sumuje ilość sztuk dla każdej ze stref.
-    """
-    # 1. Pobieramy tylko prace Otwarte i W toku, rzutując na różne możliwe zapisy API
+    # 1. Pobieramy tylko prace Otwarte i W toku
     stmt = select(ActiveWork).where(
         ActiveWork.workstatus.in_(['0', '1', 'Open', 'InProcess', '0.0', '1.0'])
     )
     result = await db.execute(stmt)
     active_works = result.scalars().all()
 
-    # 2. Inicjalizujemy bazową strukturę dla frontendu
+  
     stats = {
         "picking": 0,
         "packing": 0,
         "inbound": 0,
         "putaway": 0,
-        "sorting": 0
+        "sorting": 0,
+        "autopick": 0  
     }
 
     # 3. Kategoryzacja w pętli
     for work in active_works:
         qty = work.whasalesitemqty if work.whasalesitemqty else 1 
         
-        w_type = str(work.worktranstype).lower() if work.worktranstype else ""
-        w_template = str(work.worktemplatecode).lower() if work.worktemplatecode else ""
-        w_pool = str(work.workpoolid).lower() if work.workpoolid else ""
+        
+        w_type = str(work.worktranstype).lower().strip() if work.worktranstype else ""
+        w_template = str(work.worktemplatecode).lower().strip() if work.worktemplatecode else ""
+        w_pool = str(work.workpoolid).lower().strip() if work.workpoolid else ""
 
-        # A) Wychodzące (Sales, TransferIssue)
-        if 'sales' in w_type or 'issue' in w_type:
-            if 'pack' in w_template or 'pack' in w_pool:
-                stats['packing'] += qty
-            elif 'sort' in w_template or 'sort' in w_pool:
-                stats['sorting'] += qty
-            else:
-                stats['picking'] += qty
-                
-        # B) Przychodzące (Purch, TransferReceipt)
-        elif 'purch' in w_type or 'receipt' in w_type:
-            if 'put' in w_template:
-                stats['putaway'] += qty
-            else:
-                stats['inbound'] += qty
-                
-        # C) Fallback
-        else:
-            stats['picking'] += qty
+        # --- AUTOPICK ---
+       
+        if w_pool == 'adm-01_autopick':
+            stats['autopick'] += qty
+
+        # --- RESZTA REGUŁ ---
+        elif w_pool in ['adm-01_gabaryt', 'adm-01_its eq','adm-jedn', 'adm-01_nst_jedn', 'adm-01_nst_wiel', 'adm-01_wiel']:
+            stats['kompletacja'] += qty
+        
+        
 
     return stats
 
