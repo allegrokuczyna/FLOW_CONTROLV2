@@ -23,3 +23,11 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+class AssignmentSchema(BaseModel):
+    worker_login: str
+    shift: str
+    task: str
+
+class AiRequest(BaseModel):
+    shift: str

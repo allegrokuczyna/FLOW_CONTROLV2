@@ -6,7 +6,7 @@ from typing import List
 
 from app.db.database import get_db
 from app.db.models import WorkExport, WorkerPerformance, ActiveWork, User
-from app.db.schemas import UserCreate, UserResponse, Token
+from app.db.schemas import UserCreate, UserResponse, Token, AssignmentSchema, AiRequest
 from app.api.deps import get_current_user, get_current_admin
 from app.core.security import verify_password, create_access_token
 from app.services import users_service
@@ -14,7 +14,8 @@ from app.services.sync_service import (
     sync_works, 
     process_full_system_sync, 
     sync_active_works,
-    get_workpool_analytics
+    get_workpool_analytics,
+    get_daily_plan, save_daily_plan
 )
 from app.services.ai_service import get_ai_warehouse_advice
 from datetime import date
@@ -109,10 +110,41 @@ async def get_workpool_stats(db: AsyncSession = Depends(get_db), _user: User = D
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 # --- 5. AI I RAPORTY ---
 
 @router.get("/ai/manager_report")
 async def get_ai_report(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
     """Generuje poradę AI na podstawie obciążenia magazynu."""
     return await get_ai_warehouse_advice(db)
+
+@router.post("/plan/ai_suggest")
+async def suggest_plan(req: AiRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Przyjmuje shift_id w body (np. {"shift": "3"}) i generuje plan.
+    """
+    from app.services.ai_service import generate_ai_assignments
+    return await generate_ai_assignments(db, shift_id=req.shift)
+
+
+@router.get("/plan/workers/{shift}")
+async def get_workers_endpoint(shift: str, db: AsyncSession = Depends(get_db)):
+    try:
+        full_plan = await get_daily_plan(db)
+        
+        if shift != 'all':
+            full_plan = [w for w in full_plan if w['shift'] == shift]
+            
+        return full_plan
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/plan/save")
+async def save_assignments_endpoint(assignments: List[AssignmentSchema], db: AsyncSession = Depends(get_db)):
+    try:
+        data_dicts = [{"worker_login": a.worker_login, "shift": a.shift, "task": a.task} for a in assignments]
+        result = await save_daily_plan(data_dicts, db)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,10 +1,11 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { LayoutDashboard, Database, Cpu, Activity, LogOut } from 'lucide-react';
+import { LayoutDashboard, Database, Cpu, Activity, LogOut, Calendar } from 'lucide-react';
 
 const Sidebar = ({ activeTab, setActiveTab, onLogout }) => {
     const menuItems = [
         { id: 'dashboard', label: 'panel główny', icon: <LayoutDashboard size={18} /> },
+        { id: 'plan', label: 'plan pracy', icon: <Calendar size={18} /> },
         { id: 'sync', label: 'synchronizacja', icon: <Database size={18} /> },
         { id: 'ai', label: 'analiza ai', icon: <Cpu size={18} /> },
         { id: 'live', label: 'live status', icon: <Activity size={18} /> },

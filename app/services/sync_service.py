@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork
+from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment
 from sqlalchemy import func, select
 
 # --- INTELIGENTNY PARSER DATY ---
@@ -165,50 +165,65 @@ async def process_full_system_sync(payload: dict, db: AsyncSession):
         tomorrow = today + timedelta(days=1)
         target_dates = [today, tomorrow]
         
-        raw_m = payload.get("matryca", [])
-        if raw_m:
-            df_m = pd.DataFrame(raw_m)
-            idx = next((i for i, r in df_m.iterrows() if r.astype(str).str.contains('Login', case=False).any()), 0)
-            headers_m = [str(c).strip() for c in df_m.iloc[idx]]
-            df_m = pd.DataFrame(df_m.values[idx+1:], columns=headers_m)
-            await import_productivity_data(df_m, db)
+        print(f"🚀 START SYNC. Szukam dat: {target_dates}")
 
         raw_g = payload.get("grafik_2026", [])
-        if not raw_g: return {"status": "error", "message": "Brak danych grafik_2026"}
+        if not raw_g: 
+            return {"status": "error", "message": "Brak danych grafik_2026"}
         
+        print(f"📥 Otrzymano {len(raw_g)} wierszy z Google Sheets")
+
         df_g = pd.DataFrame(raw_g)
+        
+        # 1. SZUKAMY NAGŁÓWKA
         h_idx = next((i for i, r in df_g.iterrows() if r.astype(str).str.contains('Numer Pracownika', case=False).any()), 0)
         headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
         df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
         
+        print(f"📋 Nagłówki, które widzę: {headers_g[:15]}...") # Widzimy pierwsze 15 nagłówków (daty!)
+
+        # 2. FILTROWANIE STATUSU (uproszczone, bo App Script już to zrobił)
+        if 'Status' in df_g.columns:
+            initial_count = len(df_g)
+            df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
+            print(f"✂️ Po filtrze 'Pracuje': zostało {len(df_g)} z {initial_count} wierszy")
+
         prefix_col_name = next((c for c in df_g.columns if 'Prefiks Grupy' in str(c)), None)
 
-        if 'Status' in df_g.columns:
-            df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
-
         count_sched = 0
+        
+        # 3. PĘTLA PO WIERSZACH
         for _, row in df_g.iterrows():
             login = str(row.get('Numer Pracownika', '')).strip()
             if not login or login.lower() == 'nan': continue
+            
             group_prefix = str(row.get(prefix_col_name, '')).strip() if prefix_col_name else ""
 
+            # 4. PĘTLA PO KOLUMNACH (DATY)
             for col_name in headers_g:
                 work_date = flexible_date_parser(col_name)
-                if work_date and work_date in target_dates:
-                    shift = str(row.get(col_name, '')).strip()
-                    if shift and shift.lower() != 'nan' and shift != "":
-                        stmt = insert(Schedule).values(
-                            login=login, work_date=work_date, planned_shift=shift, group_prefix=group_prefix
-                        ).on_conflict_do_update(
-                            index_elements=['login', 'work_date'], 
-                            set_={"planned_shift": shift, "group_prefix": group_prefix}
-                        )
-                        await db.execute(stmt)
-                        count_sched += 1
+                
+                
+                if work_date:
+                    if work_date in target_dates:
+                        shift = str(row.get(col_name, '')).strip()
+                        if shift and shift.lower() != 'nan' and shift != "":
+                            stmt = insert(Schedule).values(
+                                login=login, work_date=work_date, planned_shift=shift, group_prefix=group_prefix
+                            ).on_conflict_do_update(
+                                index_elements=['login', 'work_date'], 
+                                set_={"planned_shift": shift, "group_prefix": group_prefix}
+                            )
+                            await db.execute(stmt)
+                            count_sched += 1
+                   
         
         await db.commit()
+        print(f"✅ SUKCES! Zapisałem {count_sched} rekordów do tabeli schedules.")
         return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} rekordów."}
+
     except Exception as e:
+        print(f"❌ BŁĄD SYNC: {str(e)}")
         return {"status": "error", "message": str(e)}
 
 # --- SYNC AKTYWNYCH PRAC ---
@@ -302,3 +317,98 @@ def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
             return current_time >= start_time or current_time <= end_time
     except:
         return False
+
+
+
+#------------tymczasowa funkcja
+def get_shift_number(hours_str: str) -> str:
+    """Mapuje formaty np. '06-14', '14-22' na numery zmian 1, 2, 3."""
+    if not hours_str: 
+        return "0"
+    
+    h = str(hours_str).lower().replace(" ", "").strip()
+    
+    if "06-14" in h or "6-14" in h or "08-16" in h or "06-16" in h: return "1"
+    if "14-22" in h or "12-22" in h: return "2"
+    if "22-06" in h or "22-6" in h: return "3"
+    
+    # Obsługa czystych numerów zmian
+    if h in ["1", "i", "zmianai"]: return "1"
+    if h in ["2", "ii", "zmianaii"]: return "2"
+    if h in ["3", "iii", "zmianaiii"]: return "3"
+
+    return "0"
+
+# --- ZAAWANSOWANE POBIERANIE PLANU ---
+async def get_daily_plan(db: AsyncSession, target_date: date = None):
+    try:
+        if target_date is None:
+            target_date = date.today()
+
+        # 1. Pobieramy cały dzisiejszy grafik
+        sched_stmt = select(Schedule).where(Schedule.work_date == target_date)
+        sched_res = await db.execute(sched_stmt)
+        schedules = sched_res.scalars().all()
+
+        # 2. Pobieramy ewentualne zapisane przydziały (co ktoś wyklikał w React)
+        assign_stmt = select(ShiftAssignment).where(ShiftAssignment.assignment_date == target_date)
+        assign_res = await db.execute(assign_stmt)
+        
+        # Bezpieczne budowanie słownika {login: strefa}
+        assignments = {}
+        for a in assign_res.scalars().all():
+            assignments[a.worker_login] = a.task
+
+        plan_data = []
+        for s in schedules:
+            hours = str(s.planned_shift).strip()
+            
+            # Pomijamy wpisy np. urlop, L4, zw
+            if not hours or hours.lower() in ['nan', 'none', '', 'zw', 'urlop']:
+                continue
+
+            shift_id = get_shift_number(hours)
+            current_task = assignments.get(s.login, 'unassigned')
+
+            plan_data.append({
+                "login": str(s.login),
+                "shift": str(shift_id),
+                "hours": hours,
+                "task": str(current_task)
+            })
+
+        return plan_data
+    except Exception as e:
+        print(f"❌ KRYTYCZNY BŁĄD W GET_DAILY_PLAN: {str(e)}")
+        raise e  # Przekazujemy błąd wyżej, żeby endpoint go wyłapał
+
+# --- NOWOŚĆ: ZAPISYWANIE PLANU DO BAZY ---
+async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date = None):
+    try:
+        if target_date is None:
+            target_date = date.today()
+
+        count = 0
+        for item in assignments:
+           
+            stmt = insert(ShiftAssignment).values(
+                worker_login=item['worker_login'],
+                shift=item['shift'],
+                task=item['task'],
+                assignment_date=target_date
+            ).on_conflict_do_update(
+                index_elements=['worker_login', 'assignment_date'],
+                set_={
+                    "task": item['task'], 
+                    "shift": item['shift'] 
+                } 
+            )
+            await db.execute(stmt)
+            count += 1
+            
+        await db.commit()
+        return {"status": "success", "message": f"Zapisano {count} przypisań."}
+    except Exception as e:
+        await db.rollback()
+        print(f"❌ KRYTYCZNY BŁĄD W ZAPISIE: {str(e)}")
+        raise e

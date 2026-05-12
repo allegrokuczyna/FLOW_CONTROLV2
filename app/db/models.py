@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint# dodaje Date
 from app.db.database import Base
-from datetime import datetime
+from datetime import datetime, date
 
 class User(Base):
     __tablename__ = "users"
@@ -119,3 +119,17 @@ class ActiveWork(Base):
     # Meta-dane synchronizacji
     sinkmodifiedon = Column(DateTime(timezone=True), nullable=True)
     lastprocessedchange_datetime = Column(DateTime(timezone=True), nullable=True)
+
+
+
+class ShiftAssignment(Base):
+    __tablename__ = "shift_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_login = Column(String(50), nullable=False)
+    shift = Column(String(5), nullable=False) 
+    task = Column(String(50), nullable=False)
+    assignment_date = Column(Date, default=date.today)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('worker_login', 'assignment_date', name='uq_worker_date'),)

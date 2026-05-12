@@ -1,11 +1,147 @@
 import ollama
-from sqlalchemy import select
+import json
+import re
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Schedule, WorkerPerformance
+from app.db.models import Schedule, WorkerPerformance 
 from app.services.sync_service import get_workpool_analytics, is_worker_on_shift
-from datetime import datetime, time
+from datetime import datetime
+
+# --- KONFIGURACJA ---
+MODEL_JSON = "qwen2:0.5b"  # Szybki model do JSON
+MODEL_TEXT = "phi3"        # Inteligentniejszy model do raportów
+THREADS = 2                # Limit obciążenia procesora
+
+async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
+    """Generowanie planu z wymuszeniem 100% obsadzenia pracowników."""
+    now = datetime.now()
+    workload = await get_workpool_analytics(db)
+    
+    stmt = select(Schedule.login, Schedule.planned_shift, WorkerPerformance).outerjoin(
+        WorkerPerformance, Schedule.login == WorkerPerformance.login
+    ).where(Schedule.work_date == now.date())
+    
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    team_data = []
+    print(f"--- 🔍 DEBUG START (Szukamy zmiany: {shift_id}) ---")
+    
+    for login, shift_name, perf in rows:
+        db_shift = str(shift_name).strip()
+        is_match = False
+        
+        # Logika mapowania (Dostosowana do logów: '06-16', '14-22', '22-06')
+        if shift_id == '1' and ('06-' in db_shift or '05-' in db_shift):
+            is_match = True
+        elif shift_id == '2' and ('14-' in db_shift or '13-' in db_shift):
+            is_match = True
+        elif shift_id == '3' and ('22-' in db_shift or '21-' in db_shift):
+            is_match = True
+        elif shift_id == 'all' or not shift_id:
+            if is_worker_on_shift(shift_name, now.time()):
+                is_match = True
+
+        if is_match:
+            picking_skill = perf.picking if perf else 0
+            team_data.append({"id": login, "s": f"{int(picking_skill*100)}%"})
+
+    print(f"--- 🔍 DEBUG: Znaleziono pracowników spełniających kryteria: {len(team_data)}")
+
+    if not team_data:
+        print("⚠️ UWAGA: team_data jest pusta. AI nie ma kogo przydzielić.")
+        return []
+
+    # --- ZMIANA 1: Agresywny prompt wymagający konkretnej liczby obiektów ---
+    prompt = (
+        f"You MUST assign EXACTLY {len(team_data)} workers. DO NOT skip anyone! "
+        f"Workers to assign: {json.dumps(team_data)}. "
+        f"Workload context: {json.dumps(workload)}. "
+        f"Output ONLY a JSON list of exactly {len(team_data)} objects: [{{'workerId': 'login', 'suggestedZone': 'picking', 'reason': 'text'}}] "
+        f"Zones to use: picking, packing, inbound, sorting."
+    )
+
+    try:
+        print(f"🤖 Wysyłam zapytanie do Ollama (oczekiwana liczba: {len(team_data)})...")
+        response = ollama.chat(
+            model=MODEL_JSON,
+            messages=[{'role': 'user', 'content': prompt}],
+            format='json',
+            options={
+                "temperature": 0.1, 
+                "num_thread": THREADS,
+                "num_predict": 8192 # ZMIANA 2: Dajemy gigantyczny zapas tokenów, żeby nie uciął listy
+            }
+        )
+        
+        raw_content = response['message']['content']
+        data = json.loads(raw_content)
+
+        # Wyciąganie listy
+        temp_list = []
+        if isinstance(data, list):
+            temp_list = data
+        elif isinstance(data, dict):
+            for val in data.values():
+                if isinstance(val, list):
+                    temp_list = val
+                    break
+            if not temp_list: 
+                temp_list = [data]
+
+        final_list = []
+        valid_zones = ['picking', 'packing', 'inbound', 'sorting', 'putaway']
+        assigned_ids = set() # Śledzimy, kogo AI już obsłużyło
+
+        for entry in temp_list:
+            if not isinstance(entry, dict): continue
+            
+            w_id = str(entry.get("workerId") or entry.get("id") or entry.get("login") or "")
+            zone = str(entry.get("suggestedZone") or entry.get("zone") or "picking").lower().strip()
+            
+            # Naprawa błędów modelu
+            if zone not in valid_zones or zone == "zone":
+                zone = "picking"
+
+            if w_id and w_id not in assigned_ids:
+                final_list.append({
+                    "workerId": w_id,
+                    "login": w_id, 
+                    "suggestedZone": zone,
+                    "reason": str(entry.get("reason") or "Optymalizacja")
+                })
+                assigned_ids.add(w_id)
+        
+        # --- ZMIANA 3: SIATKA BEZPIECZEŃSTWA (Safety Net) ---
+        # Jeśli AI zgubiło pracowników, dopisujemy ich ręcznie, żeby nie zostali w "Dostępni"
+        missing_workers = [w['id'] for w in team_data if w['id'] not in assigned_ids]
+        
+        if missing_workers:
+            print(f"⚠️ AI zgubiło {len(missing_workers)} pracowników. Uruchamiam siatkę bezpieczeństwa...")
+            for m_id in missing_workers:
+                final_list.append({
+                    "workerId": m_id,
+                    "login": m_id,
+                    "suggestedZone": "picking", # Domyślnie na picking (zazwyczaj wymaga najwięcej rąk)
+                    "reason": "Automatyczne uzupełnienie systemu"
+                })
+
+        print(f"✅ Sukces: Zwracam {len(final_list)} propozycji (Oczekiwano: {len(team_data)}).")
+        return final_list
+
+    except Exception as e:
+        print(f"❌ KRYTYCZNY BŁĄD AI: {e}")
+        return []
+    
+
+
+
+
+
+
 
 async def get_ai_warehouse_advice(db: AsyncSession):
+    """Generuje raport tekstowy Markdown (Manager Report)"""
     now = datetime.now()
     workpool_stats = await get_workpool_analytics(db)
     
@@ -16,49 +152,109 @@ async def get_ai_warehouse_advice(db: AsyncSession):
     result = await db.execute(worker_query)
     all_workers = result.all()
 
- 
     team_data = []
     for worker, shift in all_workers:
         if is_worker_on_shift(shift, now.time()):
+            p = int(worker.picking*100)
+            team_data.append(f"{worker.login}:PI{p}%")
 
+    prompt = f"Zadania: {json.dumps(workpool_stats)}. Pracownicy: {', '.join(team_data)}. Stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |."
+
+    try:
+        response = ollama.chat(
+            model=MODEL_TEXT, 
+            messages=[{'role': 'user', 'content': prompt}],
+            options={"temperature": 0.1, "num_thread": THREADS}
+        )
+        return {
+            "time": now.strftime("%H:%M"),
+            "ai_analysis": response['message']['content']
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+async def get_ai_warehouse_advice(db: AsyncSession):
+    """Generuje raport tekstowy Markdown (Manager Report)"""
+    now = datetime.now()
+    workpool_stats = await get_workpool_analytics(db)
+    
+    worker_query = select(WorkerPerformance, Schedule.planned_shift).join(
+        Schedule, WorkerPerformance.login == Schedule.login
+    ).where(Schedule.work_date == now.date(), Schedule.group_prefix == 'O')
+    
+    result = await db.execute(worker_query)
+    all_workers = result.all()
+
+    team_data = []
+    for worker, shift in all_workers:
+        if is_worker_on_shift(shift, now.time()):
+            p = int(worker.picking*100)
+            team_data.append(f"{worker.login}:PI{p}%")
+
+    prompt = f"Zadania: {json.dumps(workpool_stats)}. Pracownicy: {', '.join(team_data)}. Stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |."
+
+    try:
+        response = ollama.chat(
+            model=MODEL_TEXT, 
+            messages=[{'role': 'user', 'content': prompt}],
+            options={"temperature": 0.1, "num_thread": THREADS}
+        )
+        return {
+            "time": now.strftime("%H:%M"),
+            "ai_analysis": response['message']['content']
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    
+
+
+
+
+async def get_ai_warehouse_advice(db: AsyncSession):
+    """Generuje raport tekstowy/tabelę Markdown (Analiza)"""
+    now = datetime.now()
+    workpool_stats = await get_workpool_analytics(db)
+    
+    worker_query = select(WorkerPerformance, Schedule.planned_shift).join(
+        Schedule, WorkerPerformance.login == Schedule.login
+    ).where(Schedule.work_date == now.date(), Schedule.group_prefix == 'O')
+    
+    result = await db.execute(worker_query)
+    all_workers = result.all()
+
+    team_data = []
+    for worker, shift in all_workers:
+        if is_worker_on_shift(shift, now.time()):
             p = int(worker.picking*100)
             pa = int(worker.packing*100)
             f = int(worker.forklift*100)
             s = int(worker.sorting*100)
             
-            if p+pa+f+s == 0:
-                team_data.append(f"{worker.login}:NOWY")
-            else:
-                team_data.append(f"{worker.login}:PI{p}%,PA{pa}%,FO{f}%,SO{s}%")
+            # Kompaktowy zapis dla AI
+            skill_str = f"PI{p},PA{pa},FO{f},SO{s}" if (p+pa+f+s) > 0 else "NOWY"
+            team_data.append(f"{worker.login}:{skill_str}")
 
-    team_str = "\n".join(team_data)
+    team_str = ", ".join(team_data)
 
-   
+    # Bardziej precyzyjny prompt dla raportu
     prompt = f"""
-    SYSTEM: Jesteś logistykiem ADM-01.
-    ZADANIA: {workpool_stats}
-    PRACOWNICY (Login:Skille):
-    {team_str}
-
-    INSTRUKCJA:
-    1. Przypisz KAŻDEGO z powyższych {len(team_data)} pracowników do: PICKING, PACKING, FORKLIFT lub SORTING.
-    2. Odpowiedz TYLKO I WYŁĄCZNIE tabelą Markdown.
-    3. NIE używaj wielokropka (...). Wypisz WSZYSTKIE {len(team_data)} wierszy.
-    4. Kolumny: | Login | Proces | Uzasadnienie |
-    5. Jeśli ktoś ma 0% (NOWY), proces = PICKING.
-    6. Język: Polski.
-
-    TABELA:
+    Zadania: {json.dumps(workpool_stats)}
+    Pracownicy: {team_str}
+    
+    Jako logistyk, stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |. 
+    Przypisz wszystkich ({len(team_data)} osób). NOWY idzie na PICKING. 
+    Używaj tylko nazw: PICKING, PACKING, FORKLIFT, SORTING. 
+    Język polski, konkretnie, bez wstępów.
     """
 
     try:
         response = ollama.chat(
-            model='llama3', 
+            model=MODEL_TEXT, 
             messages=[{'role': 'user', 'content': prompt}],
             options={
-                "num_predict": 8192,  # Maksymalna długość
-                "temperature": 0.1,   # Maksymalna precyzja, zero kreatywności
-                "top_p": 0.9
+                "num_predict": 4096,
+                "temperature": 0.1,
+                "num_thread": THREADS
             }
         )
         return {
@@ -67,4 +263,5 @@ async def get_ai_warehouse_advice(db: AsyncSession):
             "ai_analysis": response['message']['content']
         }
     except Exception as e:
+        print(f"❌ Błąd AI (Advice): {e}")
         return {"error": str(e)}
