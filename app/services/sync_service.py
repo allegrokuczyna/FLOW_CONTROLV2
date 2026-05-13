@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment
+from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment 
 from sqlalchemy import func, select
 
 # ==============================================================================

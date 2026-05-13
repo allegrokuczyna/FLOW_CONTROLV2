@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint# dodaje Date
+from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint, Text# dodaje Date
 from app.db.database import Base
 from datetime import datetime, date
 
@@ -133,3 +133,15 @@ class ShiftAssignment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint('worker_login', 'assignment_date', name='uq_worker_date'),)
+
+#-------------odpowiedzi AI
+
+class AiReportLog(Base):
+    __tablename__ = "ai_report_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    workers_count = Column(Integer) # tutaj zwracam ilosc osob na zmianie
+    report_text = Column(Text) #odpowiedx ai
+

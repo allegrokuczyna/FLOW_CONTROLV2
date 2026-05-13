@@ -3,7 +3,7 @@ import json
 import re
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Schedule, WorkerPerformance 
+from app.db.models import Schedule, WorkerPerformance, AiReportLog
 from app.services.sync_service import get_workpool_analytics, is_worker_on_shift
 from datetime import datetime
 
@@ -140,52 +140,60 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
 # ==============================================================================
 # 2. FUNKCJA DO GENEROWANIA RAPORTU (ZWRACA TABELĘ MARKDOWN)
 # ==============================================================================
-async def get_ai_warehouse_advice(db: AsyncSession):
-    """Generuje strategiczny raport menedżerski bez przypisywania poszczególnych osób."""
+async def get_ai_warehouse_advice(db: AsyncSession, username: str = "System"):
+    """Generuje strategiczny raport menedżerski i zapisuje go w bazie."""
     now = datetime.now()
     workpool_stats = await get_workpool_analytics(db)
     
-    # Pobieramy tylko grafiki na dziś, żeby policzyć dostępnych ludzi
+    # Pobieramy grafiki na dziś
     worker_query = select(Schedule.planned_shift).where(Schedule.work_date == now.date())
     result = await db.execute(worker_query)
     all_shifts = result.scalars().all()
 
-    # Liczymy, ile osób ma aktualnie trwającą zmianę
+    # Liczymy dostępnych pracowników
     active_workers_count = sum(1 for shift in all_shifts if is_worker_on_shift(shift, now.time()))
 
-    # Bardzo szybki i krótki prompt analityczny
     prompt = f"""
     Jesteś głównym doradcą logistycznym (AI Manager).
+    Obciążenie: {json.dumps(workpool_stats)}
+    Dostępnych pracowników: {active_workers_count}
     
-    Bieżące obciążenie magazynu (ilość zadań/sztuk w strefach):
-    {json.dumps(workpool_stats)}
-    
-    Liczba dostępnych pracowników na tej zmianie: {active_workers_count}
-    
-    Twoje zadanie:
-    Napisz krótki, strategiczny raport dla kierownika zmiany (maksymalnie 3-4 zdania).
-    Wskaż, gdzie jest najwięcej pracy ("wąskie gardła") i doradź, jak zorganizować zespół, 
-    np. "Zalecam przerzucić większość sił na Picking ze względu na ogromne obciążenie".
-    NIE wymieniaj z imienia ani loginu żadnych pracowników. 
-    Odpowiadaj konkretnie, w języku polskim, używając formatowania Markdown (używaj **pogrubień** dla nazw procesów i liczb).
+    Napisz krótki raport dla kierownika zmiany (maksymalnie 3 zdania).
+    Wskaż, gdzie jest najwięcej pracy ("wąskie gardła") i doradź, jak zorganizować zespół.
+    ZASADY: ZERO wstępów, ZERO podsumowań. Od razu konkrety. Używaj formatowania Markdown.
     """
 
     try:
-        print(f"📝 Generuję błyskawiczną poradę AI (liczba osób: {active_workers_count})...")
         response = ollama.chat(
             model=MODEL_TEXT, 
             messages=[{'role': 'user', 'content': prompt}],
             options={
-                "temperature": 0.2, # Delikatna kreatywność dla ładnego tekstu
+                "temperature": 0.2, 
                 "num_thread": THREADS,
-                "num_predict": 300 # Drastycznie obcięty limit tokenów - to sprawi, że raport wygeneruje się błyskawicznie!
+                "num_predict": 500
             }
         )
+        
+        ai_text = response['message']['content']
+
+        # --- NOWOŚĆ: Zapis do bazy danych ---
+        new_log = AiReportLog(
+            username=username,
+            workers_count=active_workers_count,
+            report_text=ai_text,
+            created_at=now
+        )
+        db.add(new_log)
+        await db.commit()
+        # ------------------------------------
+
         return {
             "time": now.strftime("%H:%M"),
             "workers_count": active_workers_count,
-            "ai_analysis": response['message']['content']
+            "generated_by": username,
+            "ai_analysis": ai_text
         }
     except Exception as e:
         print(f"❌ Błąd AI (Advice): {e}")
         return {"error": str(e)}
+    
