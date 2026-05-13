@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint, Text# dodaje Date
+from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint, Text, func # dodaje Date
 from app.db.database import Base
 from datetime import datetime, date
 
@@ -145,3 +145,14 @@ class AiReportLog(Base):
     workers_count = Column(Integer) # tutaj zwracam ilosc osob na zmianie
     report_text = Column(Text) #odpowiedx ai
 
+class ForecastIntake(Base):
+    __tablename__ = "forecast_intake"
+
+    id = Column(Integer, primary_key=True, index=True)
+    forecast_date = Column(Date, index=True)      
+    hour_from = Column(DateTime(timezone=True), index=True) # Tu będzie np. 2026-05-13 08:00:00
+    forecast_pcs = Column(Integer)
+    actual_pcs = Column(Integer, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (UniqueConstraint('forecast_date', 'hour_from', name='uix_forecast_date_hour'),)
