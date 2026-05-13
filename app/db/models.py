@@ -38,14 +38,14 @@ class WorkerPerformance(Base):
     id = Column(Integer, primary_key=True, index=True)
     login = Column(String, unique=True, index=True) 
     
-    # Procenty zamienione na float
-    forklift = Column(Float, default=0.0)
-    packing = Column(Float, default=0.0)
-    picking = Column(Float, default=0.0)
-    putaway = Column(Float, default=0.0)
-    receiving = Column(Float, default=0.0)
-    returns = Column(Float, default=0.0)
-    sorting = Column(Float, default=0.0)
+    # Skille zmienione na Integer (0-6)
+    forklift = Column(Integer, default=0)
+    packing = Column(Integer, default=0)
+    picking = Column(Integer, default=0)
+    putaway = Column(Integer, default=0)
+    receiving = Column(Integer, default=0)
+    returns = Column(Integer, default=0)
+    sorting = Column(Integer, default=0)
     
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -8,9 +8,12 @@ from app.core.config import settings
 from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment
 from sqlalchemy import func, select
 
-# --- INTELIGENTNY PARSER DATY ---
+# ==============================================================================
+# 1. FUNKCJE POMOCNICZE (Parsery i Narzędzia)
+# ==============================================================================
+
 def flexible_date_parser(text):
-    """Próbuje zamienić nagłówek na czystą datę."""
+    """Próbuje zamienić nagłówek z Excela na czystą datę."""
     try:
         ts = pd.to_datetime(text, errors='coerce')
         if pd.isna(ts):
@@ -31,29 +34,44 @@ def flexible_date_parser(text):
     except:
         return None
 
-# --- POMOCNIK: PARSOWANIE PROCENTÓW ---
-def parse_percent(value):
-    if value is None or str(value).lower() in ['nan', '', 'none']:
-        return 0.0
-    
-    try:
-        if isinstance(value, (int, float)):
-            if value > 5.0: 
-                return float(value) / 100.0
-            return float(value)
-        val_str = str(value).replace(',', '.').strip()
-        has_percent_sign = '%' in val_str
-        val_str = val_str.replace('%', '')
-        val = float(val_str)
-        if has_percent_sign or val > 5.0:
-            return val / 100.0
-        return val
-    except Exception as e:
-        print(f"⚠️ Błąd parsowania: {value} -> {e}")
-        return 0.0
 
-# --- POBIERANIE DANYCH Z D365 (Helper) ---
+def parse_skill_level(value):
+    """Zamienia dane z matrycy (nawet jeśli to surowe ilości z D365) na poziomy skilli 0-6."""
+    # Zabezpieczenie przed duplikatami kolumn
+    if isinstance(value, pd.Series):
+        value = value.iloc[0]
+        
+    if pd.isna(value) or value is None or str(value).strip().lower() in ['nan', '', 'none']:
+        return 0
+        
+    try:
+        val = float(value)
+        
+        # --- AUTOMATYCZNY KALKULATOR LEVELI (0-6) ---
+        if val == 0: 
+            return 0
+        elif val <= 6: 
+            return int(val)  
+        elif val <= 50: 
+            return 1         
+        elif val <= 250: 
+            return 2         
+        elif val <= 600: 
+            return 3         
+        elif val <= 1000: 
+            return 4         
+        elif val <= 1500: 
+            return 5         
+        else: 
+            return 6         
+            
+    except Exception as e:
+        print(f"⚠️ Błąd parsowania skilla: {value} -> {e}")
+        return 0
+
+
 async def get_data(endpoint_url: str):
+    """Uniwersalny helper do odpytywania API D365."""
     token = await get_d365_access_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = str(settings.D365_URL).strip('/')
@@ -62,8 +80,184 @@ async def get_data(endpoint_url: str):
         response = await client.get(url, headers=headers)
         return response.json().get("value", []) if response.status_code == 200 else []
 
-# --- SYNC PRAC DYNAMICS (SNAJPER) ---
+
+def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
+    """Sprawdza, czy aktualna godzina mieści się w widełkach zmiany (np. '06:00-14:00')."""
+    try:
+        if not shift_str or '-' not in str(shift_str):
+            return False
+        
+        clean_shift = str(shift_str).replace(' ', '')
+        start_str, end_str = clean_shift.split('-')
+        
+        def parse_time(t_str):
+            parts = t_str.split(':')
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return time(h, m)
+
+        start_time = parse_time(start_str)
+        end_time = parse_time(end_str)
+
+        if start_time <= end_time:
+            return start_time <= current_time <= end_time
+        else:
+            return current_time >= start_time or current_time <= end_time
+    except:
+        return False
+
+
+def get_shift_number(hours_str: str) -> str:
+    """Mapuje formaty np. '06-14', '14-22' na numery zmian 1, 2, 3."""
+    if not hours_str: 
+        return "0"
+    
+    h = str(hours_str).lower().replace(" ", "").strip()
+    
+    if "06-14" in h or "6-14" in h or "08-16" in h or "06-16" in h: return "1"
+    if "14-22" in h or "12-22" in h: return "2"
+    if "22-06" in h or "22-6" in h: return "3"
+    
+    if h in ["1", "i", "zmianai"]: return "1"
+    if h in ["2", "ii", "zmianaii"]: return "2"
+    if h in ["3", "iii", "zmianaiii"]: return "3"
+
+    return "0"
+
+
+# ==============================================================================
+# 2. SYNCHRONIZACJA Z GOOGLE SHEETS (Matryca Skilli i Grafik)
+# ==============================================================================
+
+async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
+    """Importuje i tłumaczy Matrycę Skilli (Poziomy 0-6)."""
+    df_cols = {str(c).lower().strip(): c for c in df.columns}
+    
+    def get_val(current_row, col_name):
+        actual_col = df_cols.get(col_name.lower())
+        return parse_skill_level(current_row.get(actual_col)) if actual_col else 0
+
+    # Szukamy kolumny 'login' (jak widać na screenie, kolumna A)
+    login_col = df_cols.get('login')
+    if not login_col: 
+        print("⚠️ Błąd: Nie znaleziono kolumny 'Login' w matrycy skilli!")
+        return 0
+
+    import_count = 0
+    for _, row in df.iterrows():
+        # --- ZABEZPIECZENIE LOGONU PRZED ZDUPLIKOWANYMI KOLUMNAMI ---
+        raw_login = row.get(login_col, '')
+        if isinstance(raw_login, pd.Series):
+            raw_login = raw_login.iloc[0]
+            
+        login = str(raw_login).strip()
+        if not login or login.lower() == 'nan': continue
+            
+        # Tłumaczymy angielskie nagłówki z arkusza na bazę danych
+        vals = {
+            "receiving": get_val(row, 'receiving'),
+            "putaway": get_val(row, 'putaway'),
+            "picking": get_val(row, 'picking'),
+            "packing": get_val(row, 'packing'),
+            "sorting": get_val(row, 'sorting'),
+            "forklift": get_val(row, 'forklift'),
+            "returns": get_val(row, 'returns')
+        }
+        
+        stmt = insert(WorkerPerformance).values(login=login, **vals).on_conflict_do_update(
+            index_elements=['login'], set_=vals
+        )
+        await db.execute(stmt)
+        import_count += 1
+        
+    await db.commit()
+    print(f"✅ Zaktualizowano matrycę skilli (0-6) dla {import_count} pracowników.")
+    return import_count
+
+
+async def process_full_system_sync(payload: dict, db: AsyncSession):
+    """Główny silnik odbierający payload z Ngroka. Przetwarza Matrycę, a potem Grafik."""
+    try:
+        today = date.today()
+        tomorrow = today + timedelta(days=1)
+        target_dates = [today, tomorrow]
+        
+        print(f"🚀 START ZBIORCZEJ SYNCHRONIZACJI. Szukam dat: {target_dates}")
+
+        # --- 2.1 IMPORT MATRYCY SKILLI ---
+        raw_m = payload.get("matryca", [])
+        if raw_m and len(raw_m) > 1:
+            print(f"🧠 Znaleziono zakładkę Matrycy. Przetwarzam {len(raw_m)} wierszy...")
+            df_m = pd.DataFrame(raw_m)
+            
+            # NOWOŚĆ: Szukamy właściwego wiersza nagłówkowego (tego z napisem "Login")
+            h_idx_m = next((i for i, r in df_m.iterrows() if r.astype(str).str.contains('login', case=False).any()), 0)
+            headers_m = [str(c).strip() for c in df_m.iloc[h_idx_m]]
+            df_m = pd.DataFrame(df_m.values[h_idx_m+1:], columns=headers_m)
+            
+            await import_productivity_data(df_m, db)
+        else:
+            print("⚠️ Brak danych Matrycy Skilli w payloadzie.")
+
+        # --- 2.2 IMPORT GRAFIKU PRACY ---
+        raw_g = payload.get("grafik_2026", [])
+        if not raw_g: 
+            return {"status": "error", "message": "Brak danych grafiku (grafik_2026)."}
+        
+        print(f"📥 Znaleziono dane Grafiku. Przetwarzam {len(raw_g)} wierszy...")
+        df_g = pd.DataFrame(raw_g)
+        
+        # Szukamy wiersza nagłówkowego
+        h_idx = next((i for i, r in df_g.iterrows() if r.astype(str).str.contains('Numer Pracownika', case=False).any()), 0)
+        headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
+        df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
+
+        # Filtrowanie po statusie "Pracuje"
+        if 'Status' in df_g.columns:
+            initial_count = len(df_g)
+            df_g = df_g[df_g['Status'].astype(str).str.lower().str.contains('pracuje', na=False)]
+            print(f"✂️ Po filtrze 'Pracuje': zostało {len(df_g)} z {initial_count} wierszy")
+
+        prefix_col_name = next((c for c in df_g.columns if 'Prefiks Grupy' in str(c)), None)
+        count_sched = 0
+        
+        # Pętla po wierszach grafiku
+        for _, row in df_g.iterrows():
+            login = str(row.get('Numer Pracownika', '')).strip()
+            if not login or login.lower() == 'nan': continue
+            
+            group_prefix = str(row.get(prefix_col_name, '')).strip() if prefix_col_name else ""
+
+            # Szukamy dzisiejszej i jutrzejszej daty w kolumnach
+            for col_name in headers_g:
+                work_date = flexible_date_parser(col_name)
+                if work_date and work_date in target_dates:
+                    shift = str(row.get(col_name, '')).strip()
+                    if shift and shift.lower() != 'nan' and shift != "":
+                        stmt = insert(Schedule).values(
+                            login=login, work_date=work_date, planned_shift=shift, group_prefix=group_prefix
+                        ).on_conflict_do_update(
+                            index_elements=['login', 'work_date'], 
+                            set_={"planned_shift": shift, "group_prefix": group_prefix}
+                        )
+                        await db.execute(stmt)
+                        count_sched += 1
+                   
+        await db.commit()
+        print(f"✅ SUKCES! Zapisałem {count_sched} rekordów do tabeli grafiku (schedules).")
+        return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} zmian w grafiku."}
+
+    except Exception as e:
+        print(f"❌ BŁĄD SYNC: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+
+# ==============================================================================
+# 3. SYNCHRONIZACJA Z SYSTEMEM D365 (Prace Magazynowe)
+# ==============================================================================
+
 async def sync_works(db: AsyncSession):
+    """Pobieranie pełnego archiwum prac otwartych (SNAJPER)."""
     print("🔄 Start synchronizacji prac Dynamics...")
     url_works = "WarehouseWorkHeaders?cross-company=true&$filter=WarehouseId eq 'ADM-01' and WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open'&$top=2000"
     
@@ -125,108 +319,11 @@ async def sync_works(db: AsyncSession):
         await db.execute(stmt)
     
     await db.commit()
-    print(f"✅ Dynamics OK. Zsynchronizowano {len(valid_works)} prac.")
+    print(f"✅ Dynamics OK. Zsynchronizowano {len(valid_works)} prac archiwalnych.")
 
-# --- IMPORT WYDAJNOŚCI (MATRYCA) ---
-async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
-    df_cols = {str(c).lower().strip(): c for c in df.columns}
-    def get_val(row, col_name):
-        actual_col = df_cols.get(col_name.lower())
-        return parse_percent(row.get(actual_col)) if actual_col else 0.0
 
-    login_col = df_cols.get('login')
-    if not login_col: return 0
-
-    import_count = 0
-    for _, row in df.iterrows():
-        login = str(row.get(login_col, '')).strip()
-        if not login or login.lower() == 'nan': continue
-        vals = {
-            "forklift": get_val(row, 'forklift'),
-            "packing": get_val(row, 'packing'),
-            "picking": get_val(row, 'picking'),
-            "putaway": get_val(row, 'putaway'),
-            "receiving": get_val(row, 'receiving'),
-            "returns": get_val(row, 'returns'),
-            "sorting": get_val(row, 'sorting')
-        }
-        stmt = insert(WorkerPerformance).values(login=login, **vals).on_conflict_do_update(
-            index_elements=['login'], set_=vals
-        )
-        await db.execute(stmt)
-        import_count += 1
-    await db.commit()
-    return import_count
-
-# --- ZBIORCZA SYNCHRONIZACJA (FULL SYSTEM) ---
-async def process_full_system_sync(payload: dict, db: AsyncSession):
-    try:
-        today = date.today()
-        tomorrow = today + timedelta(days=1)
-        target_dates = [today, tomorrow]
-        
-        print(f"🚀 START SYNC. Szukam dat: {target_dates}")
-
-        raw_g = payload.get("grafik_2026", [])
-        if not raw_g: 
-            return {"status": "error", "message": "Brak danych grafik_2026"}
-        
-        print(f"📥 Otrzymano {len(raw_g)} wierszy z Google Sheets")
-
-        df_g = pd.DataFrame(raw_g)
-        
-        # 1. SZUKAMY NAGŁÓWKA
-        h_idx = next((i for i, r in df_g.iterrows() if r.astype(str).str.contains('Numer Pracownika', case=False).any()), 0)
-        headers_g = [str(c).strip() for c in df_g.iloc[h_idx]]
-        df_g = pd.DataFrame(df_g.values[h_idx+1:], columns=headers_g)
-        
-        print(f"📋 Nagłówki, które widzę: {headers_g[:15]}...") 
-
-        # 2. FILTROWANIE STATUSU
-        if 'Status' in df_g.columns:
-            initial_count = len(df_g)
-            df_g = df_g[df_g['Status'].astype(str).str.strip().str.lower() == 'pracuje']
-            print(f"✂️ Po filtrze 'Pracuje': zostało {len(df_g)} z {initial_count} wierszy")
-
-        prefix_col_name = next((c for c in df_g.columns if 'Prefiks Grupy' in str(c)), None)
-
-        count_sched = 0
-        
-        # 3. PĘTLA PO WIERSZACH
-        for _, row in df_g.iterrows():
-            login = str(row.get('Numer Pracownika', '')).strip()
-            if not login or login.lower() == 'nan': continue
-            
-            group_prefix = str(row.get(prefix_col_name, '')).strip() if prefix_col_name else ""
-
-            # 4. PĘTLA PO KOLUMNACH (DATY)
-            for col_name in headers_g:
-                work_date = flexible_date_parser(col_name)
-                
-                if work_date:
-                    if work_date in target_dates:
-                        shift = str(row.get(col_name, '')).strip()
-                        if shift and shift.lower() != 'nan' and shift != "":
-                            stmt = insert(Schedule).values(
-                                login=login, work_date=work_date, planned_shift=shift, group_prefix=group_prefix
-                            ).on_conflict_do_update(
-                                index_elements=['login', 'work_date'], 
-                                set_={"planned_shift": shift, "group_prefix": group_prefix}
-                            )
-                            await db.execute(stmt)
-                            count_sched += 1
-                   
-        
-        await db.commit()
-        print(f"✅ SUKCES! Zapisałem {count_sched} rekordów do tabeli schedules.")
-        return {"status": "success", "message": f"Sync OK! Zapisano {count_sched} rekordów."}
-
-    except Exception as e:
-        print(f"❌ BŁĄD SYNC: {str(e)}")
-        return {"status": "error", "message": str(e)}
-
-# --- SYNC AKTYWNYCH PRAC ---
 async def sync_active_works(db: AsyncSession):
+    """Odświeża tabelę prac Open i InProcess w locie (LIVE SYNC)."""
     filter_query = "WarehouseId eq 'ADM-01' and (WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess')"
     endpoint = f"WarehouseWorkHeaders?cross-company=true&$filter={filter_query}"
     works_data = await get_data(endpoint)
@@ -276,107 +373,70 @@ async def sync_active_works(db: AsyncSession):
         await db.execute(stmt)
     await db.commit()
 
-# --- POPRAWIONA ANALITYKA WORKPOOL (TŁUMACZ D365) ---
+
+# ==============================================================================
+# 4. ANALITYKA I OBSŁUGA GRAFIKU DLA FRONTENDU
+# ==============================================================================
+
 async def get_workpool_analytics(db: AsyncSession):
-    # 1. Pobieramy tylko prace Otwarte i W toku
+    """Tłumaczy żargon D365 na zrozumiałe strefy dla Frontendu i Mózgu AI."""
     stmt = select(ActiveWork).where(
         ActiveWork.workstatus.in_(['0', '1', 'Open', 'InProcess', '0.0', '1.0'])
     )
     result = await db.execute(stmt)
     active_works = result.scalars().all()
 
-  
     stats = {
         "picking": 0,
         "packing": 0,
         "inbound": 0,
         "putaway": 0,
-        "sorting": 0,
-        "autopick": 0  
+        "sorting": 0
     }
 
-    # 3. Kategoryzacja w pętli
     for work in active_works:
         qty = work.whasalesitemqty if work.whasalesitemqty else 1 
         
-        
-        w_type = str(work.worktranstype).lower().strip() if work.worktranstype else ""
-        w_template = str(work.worktemplatecode).lower().strip() if work.worktemplatecode else ""
-        w_pool = str(work.workpoolid).lower().strip() if work.workpoolid else ""
+        w_type = str(work.worktranstype).lower() if work.worktranstype else ""
+        w_template = str(work.worktemplatecode).lower() if work.worktemplatecode else ""
+        w_pool = str(work.workpoolid).lower() if work.workpoolid else ""
 
-        # --- AUTOPICK ---
-       
-        if w_pool == 'adm-01_autopick':
-            stats['autopick'] += qty
-
-        # --- RESZTA REGUŁ ---
-        elif w_pool in ['adm-01_gabaryt', 'adm-01_its eq','adm-jedn', 'adm-01_nst_jedn', 'adm-01_nst_wiel', 'adm-01_wiel']:
-            stats['kompletacja'] += qty
-        
-        
+        # A) Sales / Wychodzące
+        if 'sales' in w_type or 'issue' in w_type:
+            if 'pack' in w_template or 'pack' in w_pool:
+                stats['packing'] += qty
+            elif 'sort' in w_template or 'sort' in w_pool:
+                stats['sorting'] += qty
+            else:
+                stats['picking'] += qty
+                
+        # B) Purch / Przychodzące
+        elif 'purch' in w_type or 'receipt' in w_type:
+            if 'put' in w_template:
+                stats['putaway'] += qty
+            else:
+                stats['inbound'] += qty
+                
+        # C) Fallback
+        else:
+            stats['picking'] += qty
 
     return stats
 
-# --- NOWOŚĆ: FUNKCJA SPRAWDZAJĄCA ZMIANĘ ---
-def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
-    """Sprawdza, czy aktualna godzina mieści się w widełkach zmiany (np. '06:00-14:00')."""
-    try:
-        if not shift_str or '-' not in str(shift_str):
-            return False
-        
-        clean_shift = str(shift_str).replace(' ', '')
-        start_str, end_str = clean_shift.split('-')
-        
-        def parse_time(t_str):
-            parts = t_str.split(':')
-            h = int(parts[0])
-            m = int(parts[1]) if len(parts) > 1 else 0
-            return time(h, m)
 
-        start_time = parse_time(start_str)
-        end_time = parse_time(end_str)
-
-        if start_time <= end_time:
-            return start_time <= current_time <= end_time
-        else:
-            return current_time >= start_time or current_time <= end_time
-    except:
-        return False
-
-def get_shift_number(hours_str: str) -> str:
-    """Mapuje formaty np. '06-14', '14-22' na numery zmian 1, 2, 3."""
-    if not hours_str: 
-        return "0"
-    
-    h = str(hours_str).lower().replace(" ", "").strip()
-    
-    if "06-14" in h or "6-14" in h or "08-16" in h or "06-16" in h: return "1"
-    if "14-22" in h or "12-22" in h: return "2"
-    if "22-06" in h or "22-6" in h: return "3"
-    
-    # Obsługa czystych numerów zmian
-    if h in ["1", "i", "zmianai"]: return "1"
-    if h in ["2", "ii", "zmianaii"]: return "2"
-    if h in ["3", "iii", "zmianaiii"]: return "3"
-
-    return "0"
-
-# --- ZAAWANSOWANE POBIERANIE PLANU ---
 async def get_daily_plan(db: AsyncSession, target_date: date = None):
+    """Pobiera i scala grafik z ręcznymi przydziałami, przygotowując dane dla UI."""
     try:
         if target_date is None:
             target_date = date.today()
 
-        # 1. Pobieramy cały dzisiejszy grafik
         sched_stmt = select(Schedule).where(Schedule.work_date == target_date)
         sched_res = await db.execute(sched_stmt)
         schedules = sched_res.scalars().all()
 
-        # 2. Pobieramy ewentualne zapisane przydziały (co ktoś wyklikał w React)
         assign_stmt = select(ShiftAssignment).where(ShiftAssignment.assignment_date == target_date)
         assign_res = await db.execute(assign_stmt)
         
-        # Bezpieczne budowanie słownika {login: strefa}
         assignments = {}
         for a in assign_res.scalars().all():
             assignments[a.worker_login] = a.task
@@ -385,7 +445,6 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
         for s in schedules:
             hours = str(s.planned_shift).strip()
             
-            # Pomijamy wpisy np. urlop, L4, zw
             if not hours or hours.lower() in ['nan', 'none', '', 'zw', 'urlop']:
                 continue
 
@@ -404,15 +463,15 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
         print(f"❌ KRYTYCZNY BŁĄD W GET_DAILY_PLAN: {str(e)}")
         raise e 
 
-# --- NOWOŚĆ: ZAPISYWANIE PLANU DO BAZY ---
+
 async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date = None):
+    """Zapisuje przydziały do stref przeciągnięte przez użytkownika."""
     try:
         if target_date is None:
             target_date = date.today()
 
         count = 0
         for item in assignments:
-            
             stmt = insert(ShiftAssignment).values(
                 worker_login=item['worker_login'],
                 shift=item['shift'],

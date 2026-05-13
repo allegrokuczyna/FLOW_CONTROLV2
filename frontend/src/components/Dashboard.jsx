@@ -38,7 +38,7 @@ const Dashboard = () => {
     return (
         <div className="space-y-8">
             <header>
-                <h1 className="text-2xl font-semibold tracking-tight text-white/90">witaj w systemie, adrian.</h1>
+                <h1 className="text-2xl font-semibold tracking-tight text-white/90">witaj w Adamowie, pysiaczku.</h1>
                 <p className="text-gray-500 text-sm mt-1">aktualny stan operacyjny magazynu.</p>
             </header>
 

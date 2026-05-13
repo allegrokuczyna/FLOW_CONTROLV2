@@ -12,8 +12,11 @@ MODEL_JSON = "qwen2:0.5b"  # Szybki model do JSON
 MODEL_TEXT = "phi3"        # Inteligentniejszy model do raportów
 THREADS = 2                # Limit obciążenia procesora
 
+# ==============================================================================
+# 1. FUNKCJA DO GRAFIKU DRAG & DROP (ZWRACA JSON)
+# ==============================================================================
 async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
-    """Generowanie planu z wymuszeniem 100% obsadzenia pracowników."""
+    """Generowanie planu z wymuszeniem 100% obsadzenia pracowników, używając skilli 0-6."""
     now = datetime.now()
     workload = await get_workpool_analytics(db)
     
@@ -43,8 +46,9 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
                 is_match = True
 
         if is_match:
-            picking_skill = perf.picking if perf else 0
-            team_data.append({"id": login, "s": f"{int(picking_skill*100)}%"})
+            # POBIERAMY SKILL (0-6)
+            picking_skill = int(perf.picking) if perf and perf.picking else 0
+            team_data.append({"id": login, "lvl": picking_skill})
 
     print(f"--- 🔍 DEBUG: Znaleziono pracowników spełniających kryteria: {len(team_data)}")
 
@@ -52,13 +56,15 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
         print("⚠️ UWAGA: team_data jest pusta. AI nie ma kogo przydzielić.")
         return []
 
-    # --- ZMIANA 1: Agresywny prompt wymagający konkretnej liczby obiektów ---
+    # ZAKTUALIZOWANY PROMPT (SYSTEM SKILLI 0-6)
     prompt = (
         f"You MUST assign EXACTLY {len(team_data)} workers. DO NOT skip anyone! "
         f"Workers to assign: {json.dumps(team_data)}. "
         f"Workload context: {json.dumps(workload)}. "
+        f"IMPORTANT RULE: 'lvl' means Skill Level (0 is beginner, 5/6 is expert). "
+        f"Assign highly skilled workers (lvl 4-6) to demanding tasks. Assign beginners (lvl 0-1) mostly to 'picking'. "
         f"Output ONLY a JSON list of exactly {len(team_data)} objects: [{{'workerId': 'login', 'suggestedZone': 'picking', 'reason': 'text'}}] "
-        f"Zones to use: picking, packing, inbound, sorting."
+        f"Zones to use: picking, packing, inbound, sorting, putaway."
     )
 
     try:
@@ -70,7 +76,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
             options={
                 "temperature": 0.1, 
                 "num_thread": THREADS,
-                "num_predict": 8192 # ZMIANA 2: Dajemy gigantyczny zapas tokenów, żeby nie uciął listy
+                "num_predict": 8192
             }
         )
         
@@ -91,7 +97,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
 
         final_list = []
         valid_zones = ['picking', 'packing', 'inbound', 'sorting', 'putaway']
-        assigned_ids = set() # Śledzimy, kogo AI już obsłużyło
+        assigned_ids = set() 
 
         for entry in temp_list:
             if not isinstance(entry, dict): continue
@@ -99,7 +105,6 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
             w_id = str(entry.get("workerId") or entry.get("id") or entry.get("login") or "")
             zone = str(entry.get("suggestedZone") or entry.get("zone") or "picking").lower().strip()
             
-            # Naprawa błędów modelu
             if zone not in valid_zones or zone == "zone":
                 zone = "picking"
 
@@ -108,12 +113,11 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
                     "workerId": w_id,
                     "login": w_id, 
                     "suggestedZone": zone,
-                    "reason": str(entry.get("reason") or "Optymalizacja")
+                    "reason": str(entry.get("reason") or "Optymalizacja AI")
                 })
                 assigned_ids.add(w_id)
         
-        # --- ZMIANA 3: SIATKA BEZPIECZEŃSTWA (Safety Net) ---
-        # Jeśli AI zgubiło pracowników, dopisujemy ich ręcznie, żeby nie zostali w "Dostępni"
+        # SIATKA BEZPIECZEŃSTWA (Ręczne dopisanie zgubionych przez AI)
         missing_workers = [w['id'] for w in team_data if w['id'] not in assigned_ids]
         
         if missing_workers:
@@ -122,7 +126,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
                 final_list.append({
                     "workerId": m_id,
                     "login": m_id,
-                    "suggestedZone": "picking", # Domyślnie na picking (zazwyczaj wymaga najwięcej rąk)
+                    "suggestedZone": "picking", 
                     "reason": "Automatyczne uzupełnienie systemu"
                 })
 
@@ -132,134 +136,54 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None):
     except Exception as e:
         print(f"❌ KRYTYCZNY BŁĄD AI: {e}")
         return []
-    
 
-
-
-
-
-
-
+# ==============================================================================
+# 2. FUNKCJA DO GENEROWANIA RAPORTU (ZWRACA TABELĘ MARKDOWN)
+# ==============================================================================
 async def get_ai_warehouse_advice(db: AsyncSession):
-    """Generuje raport tekstowy Markdown (Manager Report)"""
+    """Generuje strategiczny raport menedżerski bez przypisywania poszczególnych osób."""
     now = datetime.now()
     workpool_stats = await get_workpool_analytics(db)
     
-    worker_query = select(WorkerPerformance, Schedule.planned_shift).join(
-        Schedule, WorkerPerformance.login == Schedule.login
-    ).where(Schedule.work_date == now.date(), Schedule.group_prefix == 'O')
-    
+    # Pobieramy tylko grafiki na dziś, żeby policzyć dostępnych ludzi
+    worker_query = select(Schedule.planned_shift).where(Schedule.work_date == now.date())
     result = await db.execute(worker_query)
-    all_workers = result.all()
+    all_shifts = result.scalars().all()
 
-    team_data = []
-    for worker, shift in all_workers:
-        if is_worker_on_shift(shift, now.time()):
-            p = int(worker.picking*100)
-            team_data.append(f"{worker.login}:PI{p}%")
+    # Liczymy, ile osób ma aktualnie trwającą zmianę
+    active_workers_count = sum(1 for shift in all_shifts if is_worker_on_shift(shift, now.time()))
 
-    prompt = f"Zadania: {json.dumps(workpool_stats)}. Pracownicy: {', '.join(team_data)}. Stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |."
-
-    try:
-        response = ollama.chat(
-            model=MODEL_TEXT, 
-            messages=[{'role': 'user', 'content': prompt}],
-            options={"temperature": 0.1, "num_thread": THREADS}
-        )
-        return {
-            "time": now.strftime("%H:%M"),
-            "ai_analysis": response['message']['content']
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-async def get_ai_warehouse_advice(db: AsyncSession):
-    """Generuje raport tekstowy Markdown (Manager Report)"""
-    now = datetime.now()
-    workpool_stats = await get_workpool_analytics(db)
-    
-    worker_query = select(WorkerPerformance, Schedule.planned_shift).join(
-        Schedule, WorkerPerformance.login == Schedule.login
-    ).where(Schedule.work_date == now.date(), Schedule.group_prefix == 'O')
-    
-    result = await db.execute(worker_query)
-    all_workers = result.all()
-
-    team_data = []
-    for worker, shift in all_workers:
-        if is_worker_on_shift(shift, now.time()):
-            p = int(worker.picking*100)
-            team_data.append(f"{worker.login}:PI{p}%")
-
-    prompt = f"Zadania: {json.dumps(workpool_stats)}. Pracownicy: {', '.join(team_data)}. Stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |."
-
-    try:
-        response = ollama.chat(
-            model=MODEL_TEXT, 
-            messages=[{'role': 'user', 'content': prompt}],
-            options={"temperature": 0.1, "num_thread": THREADS}
-        )
-        return {
-            "time": now.strftime("%H:%M"),
-            "ai_analysis": response['message']['content']
-        }
-    except Exception as e:
-        return {"error": str(e)}
-    
-
-
-
-
-async def get_ai_warehouse_advice(db: AsyncSession):
-    """Generuje raport tekstowy/tabelę Markdown (Analiza)"""
-    now = datetime.now()
-    workpool_stats = await get_workpool_analytics(db)
-    
-    worker_query = select(WorkerPerformance, Schedule.planned_shift).join(
-        Schedule, WorkerPerformance.login == Schedule.login
-    ).where(Schedule.work_date == now.date(), Schedule.group_prefix == 'O')
-    
-    result = await db.execute(worker_query)
-    all_workers = result.all()
-
-    team_data = []
-    for worker, shift in all_workers:
-        if is_worker_on_shift(shift, now.time()):
-            p = int(worker.picking*100)
-            pa = int(worker.packing*100)
-            f = int(worker.forklift*100)
-            s = int(worker.sorting*100)
-            
-            # Kompaktowy zapis dla AI
-            skill_str = f"PI{p},PA{pa},FO{f},SO{s}" if (p+pa+f+s) > 0 else "NOWY"
-            team_data.append(f"{worker.login}:{skill_str}")
-
-    team_str = ", ".join(team_data)
-
-    # Bardziej precyzyjny prompt dla raportu
+    # Bardzo szybki i krótki prompt analityczny
     prompt = f"""
-    Zadania: {json.dumps(workpool_stats)}
-    Pracownicy: {team_str}
+    Jesteś głównym doradcą logistycznym (AI Manager).
     
-    Jako logistyk, stwórz tabelę Markdown: | Login | Proces | Uzasadnienie |. 
-    Przypisz wszystkich ({len(team_data)} osób). NOWY idzie na PICKING. 
-    Używaj tylko nazw: PICKING, PACKING, FORKLIFT, SORTING. 
-    Język polski, konkretnie, bez wstępów.
+    Bieżące obciążenie magazynu (ilość zadań/sztuk w strefach):
+    {json.dumps(workpool_stats)}
+    
+    Liczba dostępnych pracowników na tej zmianie: {active_workers_count}
+    
+    Twoje zadanie:
+    Napisz krótki, strategiczny raport dla kierownika zmiany (maksymalnie 3-4 zdania).
+    Wskaż, gdzie jest najwięcej pracy ("wąskie gardła") i doradź, jak zorganizować zespół, 
+    np. "Zalecam przerzucić większość sił na Picking ze względu na ogromne obciążenie".
+    NIE wymieniaj z imienia ani loginu żadnych pracowników. 
+    Odpowiadaj konkretnie, w języku polskim, używając formatowania Markdown (używaj **pogrubień** dla nazw procesów i liczb).
     """
 
     try:
+        print(f"📝 Generuję błyskawiczną poradę AI (liczba osób: {active_workers_count})...")
         response = ollama.chat(
             model=MODEL_TEXT, 
             messages=[{'role': 'user', 'content': prompt}],
             options={
-                "num_predict": 4096,
-                "temperature": 0.1,
-                "num_thread": THREADS
+                "temperature": 0.2, # Delikatna kreatywność dla ładnego tekstu
+                "num_thread": THREADS,
+                "num_predict": 300 # Drastycznie obcięty limit tokenów - to sprawi, że raport wygeneruje się błyskawicznie!
             }
         )
         return {
             "time": now.strftime("%H:%M"),
-            "workers_count": len(team_data),
+            "workers_count": active_workers_count,
             "ai_analysis": response['message']['content']
         }
     except Exception as e:

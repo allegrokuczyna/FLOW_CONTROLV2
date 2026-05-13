@@ -11,7 +11,7 @@ const AIAnalysis = () => {
         setLoading(true);
         try {
             const response = await api.get('/ai/manager_report');
-            setReport(response.data); // Zakładam, że backend zwraca stringa lub obiekt z polem report
+            setReport(response.data); // 
         } catch (err) {
             setReport('błąd podczas generowania raportu przez silnik gemini.');
         }
@@ -38,9 +38,9 @@ const AIAnalysis = () => {
                                 <BrainCircuit size={32} />
                             </div>
                             <div className="space-y-2">
-                                <h3 className="text-sm font-medium text-gray-300">gotowy do analizy?</h3>
+                                <h3 className="text-sm font-medium text-gray-300">gotowy do analizy, pysiaczku?</h3>
                                 <p className="text-gray-600 text-xs max-w-xs mx-auto">
-                                    gemini przeanalizuje aktualne workpoole i zasugeruje optymalizację składu.
+                                    AI przeanalizuje aktualne workpoole i zasugeruje optymalizację składu.
                                 </p>
                             </div>
                             <button 
@@ -64,7 +64,7 @@ const AIAnalysis = () => {
                             
                             <div className="flex items-center gap-2 mb-6 text-blue-400">
                                 <Sparkles size={16} />
-                                <span className="text-[10px] uppercase tracking-[0.3em] font-bold">raport gemini ai</span>
+                                <span className="text-[10px] uppercase tracking-[0.3em] font-bold">raport ai</span>
                             </div>
 
                             <div className="text-gray-300 text-sm leading-relaxed whitespace-pre-wrap font-light">
