@@ -4,7 +4,8 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Sync from './components/Sync';
 import AIAnalysis from './components/AIAnalysis';
-import WorkPlan from './components/WorkPlan'; // <-- Dodany import planu pracy
+import WorkPlan from './components/WorkPlan';
+import SystemData from './components/SystemData'; // <-- Dodany import komponentu danych
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
@@ -35,7 +36,10 @@ function App() {
         
         {activeTab === 'sync' && <Sync />}
 
-        {/* Sekcja AI - teraz w pełni aktywna */}
+        {/* NOWA SEKCJA: Baza Systemowa */}
+        {activeTab === 'dane' && <SystemData />}
+
+        {/* Sekcja AI */}
         {activeTab === 'ai' && <AIAnalysis />}
 
         {/* Placeholder dla Live Status */}

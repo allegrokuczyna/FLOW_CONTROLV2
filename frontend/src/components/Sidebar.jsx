@@ -1,12 +1,15 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { LayoutDashboard, Database, Cpu, Activity, LogOut, Calendar } from 'lucide-react';
+// Dodałem ikonę Server dla lepszego rozróżnienia od synchronizacji
+import { LayoutDashboard, Database, Cpu, Activity, LogOut, Calendar, Server } from 'lucide-react';
 
 const Sidebar = ({ activeTab, setActiveTab, onLogout }) => {
     const menuItems = [
         { id: 'dashboard', label: 'panel główny', icon: <LayoutDashboard size={18} /> },
         { id: 'plan', label: 'plan pracy', icon: <Calendar size={18} /> },
         { id: 'sync', label: 'synchronizacja', icon: <Database size={18} /> },
+        // NOWA POZYCJA
+        { id: 'dane', label: 'baza systemowa', icon: <Server size={18} /> },
         { id: 'ai', label: 'analiza ai', icon: <Cpu size={18} /> },
         { id: 'live', label: 'live status', icon: <Activity size={18} /> },
     ];

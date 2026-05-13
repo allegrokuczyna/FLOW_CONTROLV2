@@ -73,22 +73,25 @@ async def get_all_mezz_open_works(db: AsyncSession):
 # SEKCJA: PROGNOZY I PLANOWANIE (FORECAST)
 # ==============================================================================
 
-async def get_upcoming_forecast(db: AsyncSession, hours_ahead: int = 2):
-    """
-    Pobiera prognozowany spływ zamówień (Intake) na najbliższe X godzin.
-    Używa połączonego pola forecast_from (DateTime).
-    """
-    now = datetime.now()
-    future_limit = now + timedelta(hours=hours_ahead)
+async def get_upcoming_forecast(db: AsyncSession):
+    """Pobiera forecast na obecną i kolejne godziny dzisiejszego oraz jutrzejszego dnia."""
+    now = datetime.utcnow()
+    
+    # ZWIĘKSZONE OKNO CZASOWE: 
+    # Bierzemy od 4 godzin wstecz (żeby widzieć, co się działo) do 24 godzin w przód
+    start_time = now - timedelta(hours=4)
+    end_time = now + timedelta(hours=24)
 
-    stmt = (
-        select(ForecastIntake)
-        .where(
-            ForecastIntake.forecast_from >= now,
-            ForecastIntake.forecast_from <= future_limit
-        )
-        .order_by(ForecastIntake.forecast_from.asc())
-    )
+    stmt = select(ForecastIntake).where(
+        ForecastIntake.hour_from >= start_time,
+        ForecastIntake.hour_from <= end_time
+    ).order_by(ForecastIntake.hour_from.asc())
 
     result = await db.execute(stmt)
-    return result.scalars().all()
+    forecasts = result.scalars().all()
+
+    return [{
+        "forecast_date": f.forecast_date.isoformat(),
+        "hour_from": f.hour_from.isoformat(),
+        "forecast_pcs": f.forecast_pcs
+    } for f in forecasts]

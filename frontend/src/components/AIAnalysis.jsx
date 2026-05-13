@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Cpu, Sparkles, BrainCircuit, History, User, Clock, ChevronRight } from 'lucide-react';
+import { Cpu, Sparkles, BrainCircuit, History, User, Clock, ChevronRight, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import api from '../api';
 
@@ -8,6 +8,7 @@ const AIAnalysis = () => {
     const [report, setReport] = useState(null);
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [selectedLog, setSelectedLog] = useState(null); // Nowy stan dla klikniętego loga
 
     // Pobieranie historii logów
     const fetchHistory = async () => {
@@ -36,7 +37,7 @@ const AIAnalysis = () => {
     };
 
     return (
-        <div className="max-w-7xl mx-auto p-6 space-y-8">
+        <div className="max-w-7xl mx-auto p-6 space-y-8 relative">
             <header>
                 <h1 className="text-2xl font-semibold tracking-tight text-white/90 underline decoration-blue-500/40 underline-offset-8">analiza ai</h1>
                 <p className="text-gray-500 text-sm mt-2">inteligentna interpretacja obciążenia magazynu i wydajności.</p>
@@ -120,7 +121,8 @@ const AIAnalysis = () => {
                                 key={log.id}
                                 initial={{ opacity: 0, x: 20 }}
                                 animate={{ opacity: 1, x: 0 }}
-                                className="p-4 border border-white/5 rounded-2xl bg-white/[0.01] hover:bg-white/[0.03] transition-colors group cursor-default"
+                                onClick={() => setSelectedLog(log)} // Wywołanie modala
+                                className="p-4 border border-white/5 rounded-2xl bg-white/[0.01] hover:bg-white/[0.05] transition-colors group cursor-pointer"
                             >
                                 <div className="flex justify-between items-start mb-2">
                                     <div className="flex items-center gap-2 text-xs text-blue-400">
@@ -132,7 +134,7 @@ const AIAnalysis = () => {
                                         {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </div>
                                 </div>
-                                <p className="text-[11px] text-gray-500 line-clamp-2 italic leading-snug group-hover:text-gray-400 transition-colors">
+                                <p className="text-[11px] text-gray-500 line-clamp-2 italic leading-snug group-hover:text-gray-300 transition-colors">
                                     {log.report_text.replace(/[#*]/g, '')}
                                 </p>
                                 <div className="mt-3 flex justify-between items-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -147,8 +149,66 @@ const AIAnalysis = () => {
                         )}
                     </div>
                 </div>
-
             </div>
+
+            {/* MODAL Z PEŁNYM RAPORTEM Z HISTORII */}
+            <AnimatePresence>
+                {selectedLog && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            onClick={(e) => e.stopPropagation()} // Zapobiega zamknięciu przy kliknięciu w sam modal
+                            className="relative w-full max-w-3xl max-h-[85vh] overflow-y-auto p-8 border border-blue-500/20 rounded-[2rem] bg-[#0a0a0a] shadow-2xl scrollbar-hide"
+                        >
+                            {/* Przycisk zamknięcia */}
+                            <button 
+                                onClick={() => setSelectedLog(null)}
+                                className="absolute top-6 right-6 p-2 rounded-full bg-white/5 hover:bg-red-500/20 hover:text-red-400 text-gray-400 transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+
+                            {/* Nagłówek modala */}
+                            <div className="flex items-center gap-4 mb-8 pb-4 border-b border-white/10">
+                                <div className="p-3 rounded-xl bg-blue-500/10 text-blue-500">
+                                    <History size={24} />
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-medium text-gray-200">Archiwum analizy AI</h2>
+                                    <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+                                        <span className="flex items-center gap-1"><User size={12}/> {selectedLog.username}</span>
+                                        <span className="flex items-center gap-1"><Clock size={12}/> {new Date(selectedLog.created_at).toLocaleString()}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Treść raportu */}
+                            <div className="prose prose-invert prose-sm max-w-none text-gray-300 leading-relaxed font-light">
+                                <ReactMarkdown>
+                                    {selectedLog.report_text}
+                                </ReactMarkdown>
+                            </div>
+                            
+                            <div className="mt-12 text-center">
+                                <button 
+                                    onClick={() => setSelectedLog(null)}
+                                    className="text-[10px] text-gray-600 uppercase tracking-widest hover:text-white transition-colors"
+                                >
+                                    [ zamknij archiwum ]
+                                </button>
+                            </div>
+                        </motion.div>
+
+                        {/* Tło klikalne do zamykania */}
+                        <div 
+                            className="absolute inset-0 -z-10" 
+                            onClick={() => setSelectedLog(null)}
+                        />
+                    </div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };

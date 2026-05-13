@@ -71,6 +71,7 @@ const Dashboard = () => {
             <div className="p-10 border border-white/5 rounded-2xl bg-white/[0.01] text-[10px] text-gray-700 text-center uppercase tracking-widest">
                 dane zsynchronizowane z Dynamics 365: {new Date().toLocaleTimeString()}
             </div>
+            
         </div>
     );
 };

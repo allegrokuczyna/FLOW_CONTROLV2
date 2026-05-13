@@ -371,23 +371,27 @@ async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date
 # --- DODATKOWE FUNKCJE POMOCNICZE (DLA AI) ---
 # ==============================================================================
 
-async def is_worker_on_shift(login: str, shift_id: str, db: AsyncSession, target_date: date = None) -> bool:
+def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
     """
-    Sprawdza, czy dany pracownik ma zaplanowaną konkretną zmianę danego dnia.
-    Wykorzystywane głównie przez AI do filtrowania dostępnych rąk do pracy.
+    Sprawdza, czy podany czas mieści się w przedziale godzinowym z grafiku (np. '06-14').
+    Wykorzystywane przez AI do liczenia aktywnych pracowników.
     """
-    if target_date is None: 
-        target_date = date.today()
-        
-    stmt = select(Schedule).where(Schedule.login == login, Schedule.work_date == target_date)
-    result = await db.execute(stmt)
-    sched = result.scalar_one_or_none()
-    
-    if not sched:
+    if not shift_str or str(shift_str).lower() in ['nan', 'none', '', 'urlop', 'zw']:
         return False
         
-    # Pobieramy godziny z grafiku (np. "06-14") i zmieniamy na numer zmiany (1, 2 lub 3)
-    actual_shift = get_shift_number(str(sched.planned_shift))
-    
-    # Zwraca True, jeśli numer zmiany w grafiku zgadza się z tą, o którą pyta AI
-    return actual_shift == str(shift_id)
+    # Parsowanie formatu '06-14' lub '14-22'
+    parts = str(shift_str).replace(' ', '').split('-')
+    if len(parts) == 2:
+        try:
+            start_h = int(parts[0])
+            end_h = int(parts[1])
+            
+            # Obsługa zmiany nocnej (np. '22-06')
+            if start_h > end_h:
+                return current_time.hour >= start_h or current_time.hour < end_h
+            else:
+                return start_h <= current_time.hour < end_h
+        except ValueError:
+            return False
+            
+    return False

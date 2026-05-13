@@ -252,3 +252,17 @@ async def is_worker_on_shift(login: str, shift_id: str, db: AsyncSession, target
     
     # Zwraca True, jeśli numer zmiany w grafiku zgadza się z tą, o którą pyta AI
     return actual_shift == str(shift_id)
+
+
+@router.get("/ai/manager_report/history")
+async def get_ai_report_history(
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db), 
+    _user: User = Depends(get_current_user)
+):
+    """Pobiera historię wygenerowanych raportów AI (domyślnie 10 ostatnich)."""
+    # Sortujemy malejąco po ID (najnowsze na górze) i ucinamy do 'limit'
+    stmt = select(AiReportLog).order_by(AiReportLog.id.desc()).limit(limit)
+    result = await db.execute(stmt)
+    
+    return result.scalars().all()
