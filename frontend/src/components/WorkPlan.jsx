@@ -1,536 +1,295 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { Users, Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Star, Loader2, Award } from 'lucide-react';
 
-import { motion, AnimatePresence } from 'framer-motion';
-
-import { Users, Sparkles, Check, CheckCircle2, Save, ArrowRight } from 'lucide-react';
-
-import api from '../api';
-
-
+const ZONES = [
+    { id: 'receiving', label: 'Receiving' },
+    { id: 'putaway', label: 'Putaway' },
+    { id: 'picking', label: 'Picking' },
+    { id: 'packing', label: 'Packing' },
+    { id: 'sorting', label: 'Sorting' }
+];
 
 const WorkPlan = () => {
+    // --- STANY ---
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [shift, setShift] = useState('2'); // Domyślnie II zmiana
+    const [isLoading, setIsLoading] = useState(false);
+    const [isDraft, setIsDraft] = useState(false);
+    
+    const [pool, setPool] = useState([]);
+    const [zones, setZones] = useState({
+        receiving: [], putaway: [], picking: [], packing: [], sorting: []
+    });
 
-    const [workers, setWorkers] = useState([]);
-
-    const [selectedShift, setSelectedShift] = useState('1');
-
-    const [aiProposals, setAiProposals] = useState([]);
-
-    const [isLoading, setIsLoading] = useState(true);
-
-    const [isSaving, setIsSaving] = useState(false);
-
-    const [isAiLoading, setIsAiLoading] = useState(false);
-
-
+    // --- HELPER: NAJLEPSZY SKILL ---
+    const getBestSkill = (worker) => {
+        const skills = [
+            { id: 'receiving', label: 'Rec', val: worker.receiving || 0 },
+            { id: 'putaway', label: 'Put', val: worker.putaway || 0 },
+            { id: 'picking', label: 'Pick', val: worker.picking || 0 },
+            { id: 'packing', label: 'Pack', val: worker.packing || 0 },
+            { id: 'sorting', label: 'Sort', val: worker.sorting || 0 }
+        ];
+        const best = skills.reduce((prev, current) => (prev.val > current.val) ? prev : current);
+        return best.val > 0 ? best : { label: 'Newbie', val: 0 };
+    };
 
     // --- POBIERANIE DANYCH ---
-
-    const loadData = async () => {
-
+    const fetchData = async () => {
         setIsLoading(true);
-
         try {
-
-            const resWorkers = await api.get(`/plan/workers/${selectedShift}`);
-
-            const initialData = resWorkers.data.map(w => ({
-
-                id: w.login,
-
-                login: w.login,
-
-                shift: w.shift,
-
-                hours: w.hours,
-
-                task: w.task || 'unassigned'
-
-            }));
-
-            setWorkers(initialData);
-
-            setAiProposals([]); 
-
-        } catch (err) {
-
-            console.error("Błąd ładowania danych:", err);
-
-        }
-
-        setIsLoading(false);
-
-    };
-
-
-
-    useEffect(() => {
-
-        loadData();
-
-    }, [selectedShift]);
-
-
-
-    // --- ZAPISYWANIE PLANU ---
-
-    const savePlanToDatabase = async () => {
-
-        setIsSaving(true);
-
-        try {
-
-            const dataToSave = workers.map(w => ({
-
-                worker_login: w.login,
-
-                shift: w.shift,
-
-                task: w.task
-
-            }));
-
-            await api.post('/plan/save', dataToSave);
-
-            alert("Plan został zapisany!");
-
-        } catch (err) {
-
-            alert("Błąd zapisu!");
-
-        }
-
-        setIsSaving(false);
-
-    };
-
-
-
-    // --- DRAG & DROP ---
-
-    const onDragStart = (e, workerId) => {
-
-        e.dataTransfer.setData("workerId", workerId);
-
-    };
-
-
-
-    const onDrop = (e, targetTask) => {
-
-        const workerId = e.dataTransfer.getData("workerId");
-
-        moveWorker(workerId, targetTask);
-
-    };
-
-
-
-    const moveWorker = (workerId, targetTask) => {
-
-        setWorkers(prev => prev.map(w => w.login === workerId ? { ...w, task: targetTask } : w));
-
-        setAiProposals(prev => prev.filter(p => p.workerId !== workerId));
-
-    };
-
-
-
-    // --- REALNA ANALIZA AI (LLAMA 3) ---
-
-    const generateAiPlan = async () => {
-
-        if (getWorkersByTask('unassigned').length === 0) return;
-
-        
-
-        setIsAiLoading(true);
-
-        try {
-
-            // KLUCZOWA ZMIANA: Wysyłamy wybraną zmianę do backendu
-
-            const res = await api.post('/plan/ai_suggest', { shift: selectedShift });
-
-            if (res.data && Array.isArray(res.data)) {
-
-                setAiProposals(res.data);
-
+            console.log(`📡 Pobieram plan: Shift ${shift}, Data ${date}`);
+            const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
+            const allWorkers = response.data;
+
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            const newPool = [];
+
+            if (allWorkers && Array.isArray(allWorkers)) {
+                allWorkers.forEach(worker => {
+                    const currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
+                    
+                    if (currentTask !== 'unassigned' && newZones[currentTask]) {
+                        newZones[currentTask].push(worker);
+                    } else {
+                        newPool.push(worker);
+                    }
+                });
             }
 
-        } catch (err) {
+            setPool(newPool);
+            setZones(newZones);
+            setIsDraft(false); 
+        } catch (error) {
+            console.error("❌ Błąd pobierania danych:", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-            console.error("Błąd AI:", err);
+    useEffect(() => {
+        fetchData();
+    }, [date, shift]);
 
-            alert("Błąd połączenia z modułem AI.");
+    // --- DRAG & DROP ---
+    const handleDragStart = (e, workerId, sourceZone) => {
+        e.dataTransfer.setData('workerId', workerId);
+        e.dataTransfer.setData('sourceZone', sourceZone);
+    };
 
+    const handleDrop = (e, targetZone) => {
+        const workerId = e.dataTransfer.getData('workerId');
+        const sourceZone = e.dataTransfer.getData('sourceZone');
+
+        if (!workerId || sourceZone === targetZone) return;
+
+        let worker;
+        if (sourceZone === 'pool') {
+            worker = pool.find(w => String(w.worker_login) === String(workerId));
+            if (!worker) return;
+            setPool(prev => prev.filter(w => String(w.worker_login) !== String(workerId)));
+        } else {
+            worker = zones[sourceZone].find(w => String(w.worker_login) === String(workerId));
+            if (!worker) return;
+            setZones(prev => ({ 
+                ...prev, 
+                [sourceZone]: prev[sourceZone].filter(w => String(w.worker_login) !== String(workerId)) 
+            }));
         }
 
-        setIsAiLoading(false);
+        const updatedWorker = { ...worker, task: targetZone };
 
+        if (targetZone === 'pool') {
+            setPool(prev => [...prev, { ...updatedWorker, task: 'unassigned' }]);
+        } else {
+            setZones(prev => ({ 
+                ...prev, 
+                [targetZone]: [...prev[targetZone], updatedWorker] 
+            }));
+        }
+        setIsDraft(true);
     };
 
+    // --- AI SUGGESTION ---
+    const handleAISuggestion = async () => {
+        setIsLoading(true);
+        try {
+            const response = await axios.post('/api/plan/ai_suggest', { 
+                shift: shift,
+                target_date: date 
+            });
+            const suggestions = response.data; 
 
+            const allWorkers = [...pool, ...Object.values(zones).flat()];
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            const newPool = [];
 
-    const acceptAllAiProposals = () => {
-
-        setWorkers(prev => {
-
-            let newWorkers = [...prev];
-
-            aiProposals.forEach(prop => {
-
-                const index = newWorkers.findIndex(w => w.login === prop.workerId);
-
-                if (index !== -1) {
-
-                    newWorkers[index] = { ...newWorkers[index], task: prop.suggestedZone };
-
+            allWorkers.forEach(w => {
+                const suggestedTask = suggestions[String(w.worker_login)];
+                if (suggestedTask && newZones[suggestedTask]) {
+                    newZones[suggestedTask].push({ ...w, task: suggestedTask });
+                } else {
+                    newPool.push({ ...w, task: 'unassigned' });
                 }
-
             });
 
-            return newWorkers;
-
-        });
-
-        setAiProposals([]);
-
+            setZones(newZones);
+            setPool(newPool);
+            setIsDraft(true);
+        } catch (error) {
+            console.error("❌ AI Error:", error);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
+    // --- POTWIERDZENIE I ZAPIS ---
+    const handleConfirm = async () => {
+        setIsLoading(true);
+        try {
+            const assignments = [];
+            Object.keys(zones).forEach(zoneId => {
+                zones[zoneId].forEach(worker => {
+                    assignments.push({
+                        worker_login: String(worker.worker_login),
+                        shift: shift,
+                        task: zoneId
+                    });
+                });
+            });
 
+            pool.forEach(worker => {
+                assignments.push({
+                    worker_login: String(worker.worker_login),
+                    shift: shift,
+                    task: 'unassigned'
+                });
+            });
 
-    const getWorkersByTask = (taskName) => workers.filter(w => w.task === taskName);
+            await axios.post(`/api/plan/save?target_date=${date}`, assignments);
+            
+            setIsDraft(false);
+            console.log("✅ Plan zapisany pomyślnie!");
+            alert("Plan został pomyślnie zapisany!");
+        } catch (error) {
+            console.error("❌ Błąd zapisu:", error);
+            alert("Błąd zapisu! Sprawdź konsolę backendu.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
+    const WorkerCard = ({ worker, sourceZone }) => {
+        const topSkill = getBestSkill(worker);
+        return (
+            <div
+                draggable
+                onDragStart={(e) => handleDragStart(e, worker.worker_login, sourceZone)}
+                className={`p-3 rounded-xl border mb-2 cursor-grab active:cursor-grabbing shadow-sm transition-all hover:border-indigo-400 ${
+                    isDraft ? 'bg-indigo-50/50 border-indigo-200' : 'bg-white border-slate-200'
+                }`}
+            >
+                <div className="flex justify-between items-start mb-2">
+                    <div className="flex flex-col gap-1 w-full overflow-hidden">
+                        {/* LOGIN PRACOWNIKA */}
+                        <span className="text-[10px] font-black text-slate-400 tracking-tight leading-none uppercase">{worker.worker_login}</span>
+                        
+                        {/* IMIĘ I NAZWISKO (DODANE) */}
+                        <span className="text-[11px] font-black text-slate-800 leading-none uppercase truncate" title={worker.full_name}>
+                            {worker.full_name || "Brak Danych"}
+                        </span>
 
-
-    if (isLoading) return <div className="h-full flex items-center justify-center italic text-gray-500 tracking-widest uppercase text-[10px]">Inicjalizacja grafiku...</div>;
-
-
+                        <div className={`flex items-center w-fit gap-1 px-1.5 py-0.5 mt-1 rounded-md text-[8px] font-black uppercase tracking-tighter border ${
+                            topSkill.val >= 5 ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-200 text-slate-500'
+                        }`}>
+                            {topSkill.val >= 5 && <Award size={10} className="text-amber-500" />}
+                            {topSkill.label}: {topSkill.val}
+                        </div>
+                    </div>
+                    <div className="flex gap-0.5 pt-0.5 shrink-0">
+                        {[1, 2, 3, 4, 5, 6].map(i => (
+                            <div key={i} className={`w-1 h-3 rounded-full ${worker.picking >= i ? 'bg-indigo-500' : 'bg-slate-100'}`} />
+                        ))}
+                    </div>
+                </div>
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-50">
+                    <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase">
+                        <Clock size={10} /> {worker.hours}
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
     return (
-
-        <div className="space-y-8 max-w-[1800px] mx-auto">
-
-            <header className="flex justify-between items-end">
-
-                <div>
-
-                    <h1 className="text-2xl font-semibold tracking-tight text-white/90 italic">Warehouse Flow Control</h1>
-
-                    <p className="text-gray-500 text-[10px] uppercase tracking-widest mt-1">Status: Dane zsynchronizowane z Grafik 2026</p>
-
-                </div>
-
-                
-
+        <div className="flex flex-col h-full bg-[#f8fafc] relative">
+            {/* TOOLBAR */}
+            <div className="flex justify-between items-center p-6 bg-white border-b border-slate-200 shrink-0 shadow-sm z-10">
                 <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-2xl border border-slate-200 shadow-sm">
+                        <CalendarDays size={16} className="text-slate-400 ml-3" />
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent text-xs font-black p-2 outline-none text-slate-700 cursor-pointer" />
+                        <div className="w-px h-4 bg-slate-200 mx-2" />
+                        <Clock size={16} className="text-slate-400" />
+                        <select value={shift} onChange={(e) => setShift(e.target.value)} className="bg-transparent text-xs font-black p-2 outline-none cursor-pointer text-slate-700 uppercase">
+                            <option value="1">Shift I</option>
+                            <option value="2">Shift II</option>
+                            <option value="3">Shift III</option>
+                        </select>
+                    </div>
+                </div>
 
-                    <button 
-
-                        onClick={savePlanToDatabase}
-
-                        disabled={isSaving}
-
-                        className="flex items-center gap-2 bg-green-600/10 hover:bg-green-600/20 text-green-400 border border-green-500/20 px-5 py-2.5 rounded-xl text-[10px] font-bold tracking-[0.2em] uppercase transition-all"
-
-                    >
-
-                        {isSaving ? 'Zapisywanie...' : 'Zatwierdź Plan'}
-
-                        <Save size={14} />
-
+                <div className="flex items-center gap-3">
+                    <button onClick={fetchData} className="p-2.5 text-slate-400 hover:bg-slate-50 rounded-xl transition-all">
+                        <RefreshCcw size={18} className={`${isLoading ? 'animate-spin' : ''}`} />
                     </button>
-
-
-
-                    <button 
-
-                        onClick={generateAiPlan}
-
-                        disabled={isAiLoading || selectedShift === 'all' || getWorkersByTask('unassigned').length === 0}
-
-                        className="flex items-center gap-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 px-5 py-2.5 rounded-xl text-[10px] font-bold tracking-[0.2em] uppercase transition-all disabled:opacity-20"
-
-                    >
-
-                        {isAiLoading ? 'Analiza...' : 'Magazynowy Mózg AI'}
-
-                        <Sparkles size={14} />
-
+                    <button onClick={handleAISuggestion} className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg hover:bg-indigo-600 transition-all hover:-translate-y-0.5">
+                        <Bot size={14} /> AI Suggestion
                     </button>
-
-
-
-                    <div className="flex gap-1.5 bg-black/20 p-1.5 rounded-xl border border-white/5">
-
-                        {['all', '1', '2', '3'].map(id => (
-
-                            <button
-
-                                key={id}
-
-                                onClick={() => setSelectedShift(id)}
-
-                                className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${selectedShift === id ? 'bg-white/10 text-white border border-white/10' : 'text-gray-500 hover:text-gray-300'}`}
-
-                            >
-
-                                {id === 'all' ? 'Wszyscy' : `Zmiana ${id}`}
-
-                            </button>
-
-                        ))}
-
-                    </div>
-
+                    <button disabled={!isDraft} onClick={handleConfirm} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg disabled:opacity-30 transition-all hover:bg-emerald-700 hover:-translate-y-0.5">
+                        <CheckCircle2 size={14} /> Confirm Plan
+                    </button>
                 </div>
-
-            </header>
-
-
-
-            <div className="grid grid-cols-1 xl:grid-cols-7 gap-4">
-
-                
-
-                <div 
-
-                    onDragOver={e => e.preventDefault()} 
-
-                    onDrop={e => onDrop(e, 'unassigned')} 
-
-                    className="xl:col-span-1 p-5 rounded-[2rem] bg-white/[0.01] border border-white/5 flex flex-col h-[750px]"
-
-                >
-
-                    <div className="flex items-center gap-2 mb-6 px-2 text-gray-500">
-
-                        <Users size={12} />
-
-                        <h2 className="text-[9px] uppercase tracking-[0.3em] font-black">Dostępni</h2>
-
-                    </div>
-
-                    <div className="space-y-2 overflow-y-auto pr-2 flex-1 custom-scrollbar">
-
-                        {getWorkersByTask('unassigned').map(w => (
-
-                            <WorkerCard key={w.login} worker={w} onDragStart={onDragStart} />
-
-                        ))}
-
-                    </div>
-
-                </div>
-
-                
-
-                <div className="xl:col-span-5 grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
-
-                     <Zone title="Picking" task="picking" workers={getWorkersByTask('picking')} onDrop={onDrop} onDragStart={onDragStart} color="border-blue-500/10" accent="bg-blue-500" />
-
-                     <Zone title="Putaway" task="putaway" workers={getWorkersByTask('putaway')} onDrop={onDrop} onDragStart={onDragStart} color="border-purple-500/10" accent="bg-purple-500" />
-
-                     <Zone title="Inbound" task="inbound" workers={getWorkersByTask('inbound')} onDrop={onDrop} onDragStart={onDragStart} color="border-green-500/10" accent="bg-green-500" />
-
-                     <Zone title="Packing" task="packing" workers={getWorkersByTask('packing')} onDrop={onDrop} onDragStart={onDragStart} color="border-orange-500/10" accent="bg-orange-500" />
-
-                     <Zone title="Sorting" task="sorting" workers={getWorkersByTask('sorting')} onDrop={onDrop} onDragStart={onDragStart} color="border-yellow-500/10" accent="bg-yellow-500" />
-
-                </div>
-
-
-
-                <div className="xl:col-span-1 p-5 rounded-[2rem] bg-blue-500/[0.03] border border-blue-500/10 flex flex-col h-[750px]">
-
-                    <div className="flex flex-col mb-6 px-2 gap-4">
-
-                        <div className="flex items-center gap-2 text-blue-400">
-
-                            <Sparkles size={12} />
-
-                            <h2 className="text-[9px] uppercase tracking-[0.3em] font-black">Sugestie AI</h2>
-
-                        </div>
-
-                        {aiProposals.length > 0 && (
-
-                            <button 
-
-                                onClick={acceptAllAiProposals}
-
-                                className="flex items-center justify-center gap-2 w-full py-2 bg-blue-500/20 hover:bg-blue-500 text-white text-[9px] uppercase tracking-widest font-bold rounded-xl transition-all border border-blue-500/30"
-
-                            >
-
-                                Akceptuj <CheckCircle2 size={12} />
-
-                            </button>
-
-                        )}
-
-                    </div>
-
-                    
-
-                    <div className="space-y-3 overflow-y-auto pr-2 flex-1 custom-scrollbar">
-
-                        <AnimatePresence>
-
-                            {aiProposals.map((prop) => (
-
-                                <motion.div 
-
-                                    key={prop.workerId}
-
-                                    initial={{ opacity: 0, y: 10 }}
-
-                                    animate={{ opacity: 1, y: 0 }}
-
-                                    className="p-3 rounded-2xl bg-white/[0.03] border border-blue-500/20 group hover:border-blue-500/50 transition-all"
-
-                                >
-
-                                    <div className="flex justify-between items-start">
-
-                                        <div>
-
-                                            <p className="text-[11px] font-bold text-white/90">{prop.login}</p>
-
-                                            <div className="flex items-center gap-1.5 mt-1 text-blue-400">
-
-                                                <ArrowRight size={10} />
-
-                                                <span className="text-[9px] uppercase font-black tracking-tighter">{prop.suggestedZone}</span>
-
-                                            </div>
-
-                                        </div>
-
-                                        <button 
-
-                                            onClick={() => moveWorker(prop.workerId, prop.suggestedZone)}
-
-                                            className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all"
-
-                                        >
-
-                                            <Check size={12} />
-
-                                        </button>
-
-                                    </div>
-
-                                </motion.div>
-
-                            ))}
-
-                        </AnimatePresence>
-
-                        {aiProposals.length === 0 && !isAiLoading && (
-
-                            <div className="h-full flex items-center justify-center text-center p-4">
-
-                                <p className="text-[9px] text-gray-600 uppercase tracking-widest leading-loose">Brak nowych sugestii. Przenieś pracowników do listy dostępnych i uruchom AI.</p>
-
-                            </div>
-
-                        )}
-
-                    </div>
-
-                </div>
-
-
-
             </div>
 
+            {/* MAIN WORKSPACE */}
+            <div className="flex flex-1 overflow-hidden p-6 gap-6">
+                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-72 bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-[2.5rem] flex flex-col overflow-hidden shadow-inner">
+                    <div className="p-5 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Unassigned Pool</span>
+                        <span className="bg-white text-slate-900 text-[10px] font-black px-3 py-1 rounded-full border border-slate-200 shadow-sm">{pool.length}</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                        {pool.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone="pool" />)}
+                    </div>
+                </div>
+
+                <div className="flex-1 grid grid-cols-5 gap-4 overflow-x-auto pb-4">
+                    {ZONES.map(zone => (
+                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-[2rem] flex flex-col min-w-[220px] shadow-sm overflow-hidden hover:border-indigo-200 transition-all group">
+                            <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50 group-hover:bg-indigo-50/30 transition-colors">
+                                <h3 className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 uppercase tracking-widest transition-colors">{zone.label}</h3>
+                                <span className="text-[10px] font-black text-indigo-600 bg-white px-2 py-1 rounded-lg border border-indigo-100">{zones[zone.id].length}</span>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+                                {zones[zone.id].map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {isLoading && (
+                <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-[2px] z-50 flex items-center justify-center">
+                    <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center border border-slate-200 animate-in zoom-in duration-200">
+                        <Loader2 className="animate-spin text-indigo-600 mb-4" size={40} />
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-800">Processing Data...</span>
+                    </div>
+                </div>
+            )}
         </div>
-
     );
-
 };
 
-
-
-const WorkerCard = ({ worker, onDragStart }) => (
-
-    <motion.div
-
-        draggable onDragStart={(e) => onDragStart(e, worker.login)}
-
-        whileHover={{ x: 3 }}
-
-        className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 cursor-grab active:cursor-grabbing hover:bg-white/[0.06] hover:border-white/10 transition-all flex justify-between items-center group"
-
-    >
-
-        <span className="text-xs font-bold text-gray-300 group-hover:text-white transition-colors">{worker.login}</span>
-
-        <div className="px-2 py-0.5 rounded-md bg-black/20 border border-white/5">
-
-            <span className="text-[8px] text-gray-500 font-mono">{worker.hours}</span>
-
-        </div>
-
-    </motion.div>
-
-);
-
-
-
-const Zone = ({ title, task, workers, onDrop, onDragStart, color, accent }) => (
-
-    <div 
-
-        onDragOver={e => e.preventDefault()}
-
-        onDrop={(e) => onDrop(e, task)}
-
-        className={`p-5 rounded-[2.5rem] border ${color} bg-white/[0.01] flex flex-col transition-all hover:bg-white/[0.02] h-[750px]`}
-
-    >
-
-        <div className="flex justify-between items-center mb-6 pb-3 border-b border-white/5">
-
-            <div className="flex items-center gap-2.5">
-
-                <div className={`w-1.5 h-1.5 rounded-full ${accent} shadow-[0_0_10px_rgba(255,255,255,0.2)]`} />
-
-                <h3 className="text-[10px] uppercase tracking-[0.3em] font-black text-gray-400">{title}</h3>
-
-            </div>
-
-            <div className="px-2 py-1 rounded-lg bg-white/5 border border-white/5">
-
-                <span className="text-[10px] font-mono text-gray-400">{workers.length}</span>
-
-            </div>
-
-        </div>
-
-        <div className="space-y-2 overflow-y-auto custom-scrollbar pr-1 flex-1">
-
-            {workers.map(w => <WorkerCard key={w.login} worker={w} onDragStart={onDragStart} />)}
-
-            {workers.length === 0 && (
-
-                <div className="h-full flex items-center justify-center border-2 border-dashed border-white/[0.02] rounded-[2rem]">
-
-                    <span className="text-[8px] uppercase tracking-[0.2em] text-gray-700">Upuść tutaj</span>
-
-                </div>
-
-            )}
-
-        </div>
-
-    </div>
-
-);
-
-
-
 export default WorkPlan;
-

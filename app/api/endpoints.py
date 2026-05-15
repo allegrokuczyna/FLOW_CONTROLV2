@@ -4,22 +4,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import List
 from datetime import date, datetime
+from fastapi.encoders import jsonable_encoder
+from typing import Optional
 
 from app.db.database import get_db
-from app.db.models import WorkExport, WorkerPerformance, ActiveWork, User, AiReportLog, ForecastIntake, Schedule
+from app.db.models import WorkExport, WorkerPerformance, ActiveWork, User, AiReportLog, ForecastIntake, Schedule, ZoneConstraint
 from app.db.schemas import UserCreate, UserResponse, Token, AssignmentSchema, AiRequest
 from app.api.deps import get_current_user, get_current_admin
 from app.core.security import verify_password, create_access_token
 from app.services import users_service
-from app.db.queries import get_replenishment_open_works, get_all_mezz_open_works, get_upcoming_forecast
+from app.db.queries import get_replenishment_open_works, get_all_mezz_open_works, get_upcoming_forecast, get_inbound_works_mezz, get_multi_orders, get_one_open_pieces
 from app.services.sync_service import (
     sync_works, 
-    process_full_push_sync,  # <--- Zmieniono z PULL na PUSH
+    process_full_push_sync, 
     sync_active_works,
     get_workpool_analytics,
     get_daily_plan, 
     save_daily_plan,
-    get_shift_number
+    get_shift_number,
+    get_all_constraints,
+    update_or_create_constraints,
+    get_weekly_schedule
 )
 
 router = APIRouter()
@@ -75,12 +80,15 @@ async def register_new_user(
 async def trigger_full_push(payload: dict, db: AsyncSession = Depends(get_db)):
     """
     Główny endpoint dla Apps Script. Przyjmuje paczkę: Matryca, Grafik i Forecast.
-    Zamiast bić się z uprawnieniami Google, przyjmujemy to co wyśle nam skrypt.
+    Z globalnym prefiksem adres to: /api/sync/full_push
     """
     try:
+        
         result = await process_full_push_sync(payload, db)
         return {"status": "success", "details": result}
     except Exception as e:
+        # Logujemy błąd
+        print(f"❌ Critical Sync Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Błąd synchronizacji PUSH: {str(e)}")
 
 @router.post("/sync/works")
@@ -100,6 +108,45 @@ async def trigger_active_sync(db: AsyncSession = Depends(get_db), _admin: User =
         return {"status": "success", "message": "Stan aktywnych prac odświeżony."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sync/inspect_d365")
+async def inspect_d365_fields():
+    """Tymczasowy endpoint do podglądu dostępnych kolumn w D365."""
+    from app.services.sync_service import get_data
+    endpoint = "WarehouseWorkHeaders?cross-company=true&$top=1"
+    works_data = await get_data(endpoint)
+    
+    if not works_data or len(works_data) == 0:
+        return {"status": "error", "message": "Nie udało się pobrać żadnych danych z D365."}
+        
+    sample_record = works_data[0]
+    available_columns = list(sample_record.keys())
+    available_columns.sort()
+    
+    return {
+        "status": "success", 
+        "total_columns": len(available_columns),
+        "columns": available_columns,
+        "sample_data": sample_record 
+    }
+
+
+@router.get("/works/live")
+async def get_live_active_works(
+    db: AsyncSession = Depends(get_db), 
+    _user: User = Depends(get_current_user)
+):
+    """Pobiera pełną listę aktywnych prac posortowaną od najwyższego priorytetu."""
+    stmt = select(ActiveWork).order_by(ActiveWork.workpriority.desc())
+    result = await db.execute(stmt)
+    active_works = result.scalars().all()
+
+    return {
+        "status": "success",
+        "total_count": len(active_works),
+        "data": jsonable_encoder(active_works) 
+    }
 
 
 # ==============================================================================
@@ -138,6 +185,51 @@ async def get_zone_pick_query(db: AsyncSession = Depends(get_db), _user: User = 
         return {"status": "success", "count": len(data), "result": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/works/inbound-mezz")
+async def get_inbound_mezz_query(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    try:
+        result = await get_inbound_works_mezz(db)
+        data = [{
+            "order": row.ordernum,
+            "workid": row.workid,
+            "qty": row.whasalesitemqty
+        } for row in result]
+
+        return {"status": "success", "count": len(data), "result": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/works/multi-orders")
+async def get_multi_orders_query(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    try:
+        result = await get_multi_orders(db)
+        data = [{
+            "order": row.ordernum,
+            "workid": row.workid,
+            "qty": row.whasalesitemqty,
+            "workpool_id": row.workpoolid,
+            "work_status": row.workstatus
+        } for row in result]
+        return {"status": "success", "count": len(data), "result": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/works/single-orders")
+async def get_single_orders_query(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+    try:
+        result = await get_one_open_pieces(db)
+        data = [{
+            "order": row.ordernum,
+            "workpool": row.workpoolid,
+            "qty": row.whasalesitemqty,
+            "work_status": row.workstatus
+        } for row in result]
+        return {"status": "success", "count": len(data), "result": data}
+    except Exception as e:
+        raise HTTPException (status_code=500, detail=str(e))
 
 @router.get("/works/forecast_upcoming")
 async def get_upcoming_intake(db: AsyncSession = Depends(get_db)):
@@ -145,10 +237,61 @@ async def get_upcoming_intake(db: AsyncSession = Depends(get_db)):
     data = await get_upcoming_forecast(db)
     return {"status": "success", "count": len(data), "data": data}
 
+# --- KONFIGURACJA AI (CONSTRAINTS) ---
+
+@router.get("/settings/constraints") # <-- Skróć ścieżkę tutaj
+async def read_constraints(db: AsyncSession = Depends(get_db)):
+    """Pobiera parametry MIN/MAX i Priorytety dla AI z Postgresa."""
+    try:
+        # Wywołujemy funkcję z serwisu (którą poprawiliśmy wcześniej)
+        constraints = await get_all_constraints(db) 
+        return constraints
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/settings/constraints") 
+async def save_constraints(data: list[dict], db: AsyncSession = Depends(get_db)):
+    """Zapisuje konfigurację stref."""
+    try:
+        # Używamy poprawionej funkcji z UPSERT
+        await update_or_create_constraints(db, data)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ==============================================================================
 # --- 5. ANALITYKA I PRODUKTYWNOŚĆ ---
 # ==============================================================================
+
+@router.get("/plan/workers/{shift_id}")
+async def get_workers_for_shift(
+    shift_id: str, 
+    target_date: date = None, 
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Pobiera pracowników i filtruje ich po zmianie (1, 2 lub 3).
+    Używamy str() aby uniknąć błędów porównywania int vs string.
+    """
+    if target_date is None:
+        target_date = date.today()
+    
+    # Pobieramy wszystkich pracowników na dany dzień
+    daily_plan = await get_daily_plan(db, target_date)
+    
+    if shift_id.lower() == "all":
+        return daily_plan
+        
+    # FILTRACJA: Porównujemy shift_id z wynikiem funkcji get_shift_number zapisanym w daily_plan
+    filtered_plan = [
+        worker for worker in daily_plan 
+        if str(worker.get("shift")) == str(shift_id)
+    ]
+    
+    print(f"DEBUG: Data {target_date}, Zmiana {shift_id}, Znaleziono: {len(filtered_plan)} osób")
+    return filtered_plan
+
 
 @router.get("/analytics/workpools")
 async def get_workpool_stats(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
@@ -182,18 +325,31 @@ async def get_ai_report(db: AsyncSession = Depends(get_db), _user: User = Depend
 
 @router.post("/plan/ai_suggest")
 async def suggest_plan(req: AiRequest, db: AsyncSession = Depends(get_db)):
-    """Generuje automatyczny plan przydziałów pracowników przez AI."""
     from app.services.ai_service import generate_ai_assignments
-    return await generate_ai_assignments(db, shift_id=req.shift)
+    
+    shift_id = str(req.shift)
+    parsed_date = None
+    
+    # Bezpieczna konwersja stringa na datę
+    if req.target_date:
+        try:
+            parsed_date = datetime.strptime(req.target_date, "%Y-%m-%d").date()
+        except ValueError:
+            parsed_date = None # W razie dziwnego formatu, AI weźmie "dzisiaj"
+            
+    # Przekazujemy gotową datę do serwisu
+    return await generate_ai_assignments(db, shift_id=shift_id, target_date=parsed_date)
 
 @router.post("/plan/save")
-async def save_assignments_endpoint(assignments: List[AssignmentSchema], db: AsyncSession = Depends(get_db)):
-    """Zapisuje przydziały (ręczne lub AI) do bazy danych."""
-    try:
-        data_dicts = [{"worker_login": a.worker_login, "shift": a.shift, "task": a.task} for a in assignments]
-        return await save_daily_plan(data_dicts, db)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def save_plan(
+    assignments: List[AssignmentSchema], 
+    target_date: Optional[date] = None, # <--- Odbieramy datę z URL
+    db: AsyncSession = Depends(get_db)
+):
+    from app.services.sync_service import save_daily_plan
+    data = [a.dict() for a in assignments]
+    return await save_daily_plan(data, db, target_date=target_date)
+
 
 @router.get("/plan/daily")
 async def get_daily_schedule(
@@ -212,46 +368,11 @@ async def get_workers_for_shift(
     _user: User = Depends(get_current_user)
 ):
     """Zwraca pracowników dla konkretnej zmiany (1, 2, 3) lub wszystkich ('all')."""
-    
-    # 1. Pobieramy cały plan na dany dzień (z matrycą skilli)
     daily_plan = await get_daily_plan(db, target_date)
-    
-    # 2. Jeśli frontend prosi o 'all', zwracamy wszystkich z tego dnia
     if shift_id.lower() == "all":
         return daily_plan
-        
-    # 3. Jeśli prosi o konkretną zmianę (np. '1', '2', '3'), filtrujemy listę
     filtered_plan = [worker for worker in daily_plan if str(worker.get("shift")) == str(shift_id)]
-    
     return filtered_plan
-
-
-
-
-# ==============================================================================
-# --- DODATKOWE FUNKCJE POMOCNICZE (AI) ---
-# ==============================================================================
-
-async def is_worker_on_shift(login: str, shift_id: str, db: AsyncSession, target_date: date = None) -> bool:
-    """
-    Sprawdza, czy dany pracownik ma zaplanowaną konkretną zmianę danego dnia.
-    Wykorzystywane głównie przez AI do filtrowania dostępnych rąk do pracy.
-    """
-    if target_date is None: 
-        target_date = date.today()
-        
-    stmt = select(Schedule).where(Schedule.login == login, Schedule.work_date == target_date)
-    result = await db.execute(stmt)
-    sched = result.scalar_one_or_none()
-    
-    if not sched:
-        return False
-        
-    # Pobieramy godziny z grafiku (np. "06-14") i zmieniamy na numer zmiany (1, 2 lub 3)
-    actual_shift = get_shift_number(str(sched.planned_shift))
-    
-    # Zwraca True, jeśli numer zmiany w grafiku zgadza się z tą, o którą pyta AI
-    return actual_shift == str(shift_id)
 
 
 @router.get("/ai/manager_report/history")
@@ -260,9 +381,13 @@ async def get_ai_report_history(
     db: AsyncSession = Depends(get_db), 
     _user: User = Depends(get_current_user)
 ):
-    """Pobiera historię wygenerowanych raportów AI (domyślnie 10 ostatnich)."""
-    # Sortujemy malejąco po ID (najnowsze na górze) i ucinamy do 'limit'
+    """Pobiera historię wygenerowanych raportów AI."""
     stmt = select(AiReportLog).order_by(AiReportLog.id.desc()).limit(limit)
     result = await db.execute(stmt)
-    
     return result.scalars().all()
+
+@router.get("/plan/weekly")
+async def get_weekly_schedule_api(db: AsyncSession = Depends(get_db)):
+    """Pobiera pełną macierz grafiku na najbliższe 7 dni."""
+    from app.services.sync_service import get_weekly_schedule
+    return await get_weekly_schedule(db)

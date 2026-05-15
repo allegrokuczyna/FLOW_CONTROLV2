@@ -55,6 +55,7 @@ class Schedule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     login = Column(String(50), index=True, nullable=False)
+    full_name = Column(String(255), nullable=True)
     work_date = Column(Date, index=True, nullable=False) 
     planned_shift = Column(String(50))
     is_present = Column(Boolean, default=False)
@@ -156,3 +157,22 @@ class ForecastIntake(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (UniqueConstraint('forecast_date', 'hour_from', name='uix_forecast_date_hour'),)
+
+
+#plan pracy magazynu
+
+class ZoneConstraint(Base):
+    __tablename__ = "zone_constraints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    zone_name = Column(String, unique=True, index=True)
+    category = Column(String)  # Inbound / Outbound
+    priority = Column(Integer)
+    
+    # Limity dla 3 zmian (Shift 1, 2, 3)
+    s1_min = Column(Integer, nullable=True)
+    s1_max = Column(Integer, nullable=True)
+    s2_min = Column(Integer, nullable=True)
+    s2_max = Column(Integer, nullable=True)
+    s3_min = Column(Integer, nullable=True)
+    s3_max = Column(Integer, nullable=True)

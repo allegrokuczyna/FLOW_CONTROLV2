@@ -3,11 +3,15 @@ import pandas as pd
 from io import StringIO
 from datetime import date, timedelta, datetime, time
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select, delete
+from sqlalchemy import delete, insert, cast, Date, select
 from sqlalchemy.dialects.postgresql import insert  # Wyłącznie Postgres
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment, ForecastIntake
+from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment, ForecastIntake, ZoneConstraint
+from dateutil.parser import parse as parse_date
+import logging
+
+
 
 # ==============================================================================
 # 1. FUNKCJE POMOCNICZE (Parsery i Narzędzia)
@@ -50,14 +54,7 @@ def parse_skill_level(value):
     except:
         return 0
 
-def get_shift_number(hours_str: str) -> str:
-    """Mapuje formaty godzin na numery zmian 1, 2, 3."""
-    if not hours_str: return "0"
-    h = str(hours_str).lower().replace(" ", "").strip()
-    if any(x in h for x in ["06-14", "6-14", "08-16", "06-16"]): return "1"
-    if any(x in h for x in ["14-22", "12-22"]): return "2"
-    if any(x in h for x in ["22-06", "22-6"]): return "3"
-    return "0"
+
 
 async def get_data(endpoint_url: str):
     """Uniwersalny helper do API D365."""
@@ -74,42 +71,33 @@ async def get_data(endpoint_url: str):
 # ==============================================================================
 
 async def process_full_push_sync(payload: dict, db: AsyncSession):
-    """
-    Odbiera dane wypchnięte z Google Apps Script (Matryca, Grafik, Forecast).
-    Omija błędy 401, bo to Google pcha dane do nas.
-    """
     report = {}
     today = date.today()
-    target_dates = [today, today + timedelta(days=1)]
+    # Pobieramy dane na 7 dni (zgodnie z wcześniejszym ustaleniem)
+    target_dates = [today + timedelta(days=i) for i in range(7)]
 
-    # --- 2.1 MATRYCA SKILLI ---
+    # --- 2.1 MATRYCA SKILLI (bez zmian) ---
     try:
         raw_m = payload.get("matryca", [])
         if raw_m and len(raw_m) > 1:
-            # 🔍 Szukamy wiersza z nagłówkami (szukamy 'login' w pierwszych 10 wierszach)
             header_idx = 0
             for i, row in enumerate(raw_m[:10]):
                 row_str = [str(cell).lower() for cell in row]
                 if any("login" in cell or "numer" in cell or "id" in cell for cell in row_str):
                     header_idx = i
                     break
-            
             headers = [str(c).strip().lower() for c in raw_m[header_idx]]
             data = raw_m[header_idx + 1:]
             df_m = pd.DataFrame(data, columns=headers)
-            
             count_m = await import_productivity_data(df_m, db)
             report["matrix"] = f"Success ({count_m} workers)"
-        else:
-            report["matrix"] = "No data"
     except Exception as e:
         report["matrix"] = f"Error: {str(e)}"
 
-    # --- 2.2 GRAFIK PRACY ---
+    # --- 2.2 GRAFIK PRACY (Z NOWYMI FILTRAMI: STATUS I PREFIX) ---
     try:
         raw_g = payload.get("grafik", [])
         if raw_g and len(raw_g) > 1:
-            # 🔍 Szukamy wiersza z nagłówkami
             header_idx = 0
             for i, row in enumerate(raw_g[:10]):
                 row_str = [str(cell).lower() for cell in row]
@@ -121,65 +109,121 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
             data = raw_g[header_idx + 1:]
             df_g = pd.DataFrame(data, columns=headers)
             
-            # Filtrowanie statusu
+            # --- FILTR 1: Status musi być dokładnie "pracuje" (ignoring case/spaces) ---
             if 'Status' in df_g.columns:
-                df_g = df_g[df_g['Status'].astype(str).str.lower().str.contains('pracuje', na=False)]
+                df_g = df_g[df_g['Status'].astype(str).str.lower().str.strip() == 'pracuje']
+            
+            # --- FILTR 2: Prefiks Grupy musi zawierać "O" (Operacja) ---
+            if 'Prefiks Grupy' in df_g.columns:
+                # Używamy startswith('O'), żeby łapać O, O-1, O-2, ale odsiać inne działy
+                df_g = df_g[df_g['Prefiks Grupy'].astype(str).str.upper().str.strip().str.startswith('O', na=False)]
             
             count_g = 0
             for _, row in df_g.iterrows():
                 login = str(row.get('Numer Pracownika', '')).strip()
-                if not login or login == 'nan': continue
+                full_name = str(row.get('Imię i Nazwisko', '')).strip()
+                prefix = str(row.get('Prefiks Grupy', '')).strip() 
+                
+                if not login or login == 'nan' or login == '': continue
                 
                 for col in df_g.columns:
                     work_date = flexible_date_parser(col)
                     if work_date in target_dates:
-                        shift = str(row.get(col, '')).strip()
-                        if shift and shift.lower() not in ['nan', '']:
-                            stmt = insert(Schedule).values(
-                                login=login, work_date=work_date, planned_shift=shift
-                            ).on_conflict_do_update(
-                                index_elements=['login', 'work_date'],
-                                set_={"planned_shift": shift}
-                            )
-                            await db.execute(stmt)
-                            count_g += 1
-            report["schedule"] = f"Success ({count_g} shifts)"
+                        
+                        # Pobranie komórki (odporne na zduplikowane kolumny)
+                        raw_val = row.get(col)
+                        if hasattr(raw_val, 'iloc'):
+                            raw_val = raw_val.iloc[0]
+                            
+                        shift_val = str(raw_val).strip()
+                        
+                        if not shift_val or shift_val.lower() in ['nan', '', 'null', '0']:
+                            continue
+                            
+                        # --- GENIALNIE PROSTY FILTR: ODRZUCAMY GODZINY ---
+                        # Jeśli wartość w komórce da się zamienić na ułamek (np. "8", "8.0", "12"),
+                        # to znaczy, że to licznik godzin. Ignorujemy to!
+                        # Prawdziwa zmiana "6-14" lub "uz" wyrzuci tu błąd (ValueError) i przejdzie dalej.
+                        try:
+                            float(shift_val.replace(',', '.'))
+                            continue # To czysta liczba, pomijamy!
+                        except ValueError:
+                            pass # To tekst (np. "6-14", "uz"). Zapisujemy!
+                        # --------------------------------------------------
+
+                        stmt = insert(Schedule).values(
+                            login=login,
+                            full_name=full_name if full_name != 'nan' else None,
+                            work_date=work_date,
+                            planned_shift=shift_val,
+                            group_prefix=prefix
+                        ).on_conflict_do_update(
+                            index_elements=['login', 'work_date'],
+                            set_={
+                                "planned_shift": shift_val,
+                                "full_name": full_name if full_name != 'nan' else None,
+                                "group_prefix": prefix
+                            }
+                        )
+                        await db.execute(stmt)
+                        count_g += 1
+
+            report["schedule"] = f"Success ({count_g} shifts for filtered Operation workers)"
         else:
-            report["schedule"] = "No data"
+            report["schedule"] = "No data in grafik"
     except Exception as e:
         report["schedule"] = f"Error: {str(e)}"
 
-    # --- 2.3 FORECAST (INTAKE) ---
+    # --- 2.3 FORECAST (bez zmian, 7 dni) ---
     try:
         raw_f = payload.get("forecast", [])
         if raw_f:
-            # 1. Usuwamy z bazy stare wpisy, ale TYLKO dla tych dni, które aktualizujemy
             await db.execute(delete(ForecastIntake).where(ForecastIntake.forecast_date.in_(target_dates)))
-            
             new_forecasts = []
             for item in raw_f:
-                # Parsujemy datę przysłaną z Apps Script
                 dt_obj = datetime.fromisoformat(item['dt'].replace('Z', '+00:00'))
-                
-                # 2. FILTR: Bierzemy tylko rekordy, które pasują do dzisiaj (i ew. jutra)
                 if dt_obj.date() in target_dates:
                     new_forecasts.append(ForecastIntake(
                         forecast_date=dt_obj.date(),      
                         hour_from=dt_obj,                 
                         forecast_pcs=int(item['pcs'])     
                     ))
-            
             if new_forecasts:
                 db.add_all(new_forecasts)
-                
-            report["forecast"] = f"Success ({len(new_forecasts)} lines for target dates)"
-        else:
-            report["forecast"] = "No data"
+            report["forecast"] = f"Success ({len(new_forecasts)} lines)"
     except Exception as e:
         report["forecast"] = f"Error: {str(e)}"
 
     await db.commit()
     return report
+
+
+
+async def get_weekly_schedule(db: AsyncSession):
+    today = date.today()
+    days = [today + timedelta(days=i) for i in range(7)]
+    
+    # Pobieramy wszystkie grafiki na te 7 dni
+    stmt = select(Schedule).where(Schedule.work_date.in_(days))
+    res = await db.execute(stmt)
+    all_schedules = res.scalars().all()
+
+    # Budujemy strukturę: { login: { "full_name": "...", "dates": { "2026-05-15": "6-14", ... } } }
+    matrix = {}
+    for s in all_schedules:
+        if s.login not in matrix:
+            matrix[s.login] = {
+                "login": s.login,
+                "full_name": s.full_name or "Brak danych",
+                "days": {}
+            }
+        matrix[s.login]["days"][str(s.work_date)] = s.planned_shift
+
+    
+    return {
+        "dates": [str(d) for d in days],
+        "workers": list(matrix.values())
+    }
 
 # ==============================================================================
 # 3. IMPORT PRODUKTYWNOŚCI (Logika 0-6)
@@ -243,6 +287,9 @@ async def import_productivity_data(df: pd.DataFrame, db: AsyncSession):
     print(f"✅ Przetworzono matrycę: zapisano/zaktualizowano {import_count} pracowników.")
     return import_count
 
+
+
+
 # ==============================================================================
 # 4. ANALITYKA I D365
 # ==============================================================================
@@ -269,31 +316,98 @@ async def sync_works(db: AsyncSession):
     await db.commit()
 
 async def sync_active_works(db: AsyncSession):
-    """Live Sync prac Open/InProcess."""
+    """Live Sync prac Open/InProcess - Wersja Transactional Replace z Paczkowaniem (Batches)."""
+    print("🚀 START SYNC (Transactional Replace): Pobieram dane z D365...")
+    
     filter_query = "WarehouseId eq 'ADM-01' and (WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess')"
     endpoint = f"WarehouseWorkHeaders?cross-company=true&$filter={filter_query}"
-    works_data = await get_data(endpoint)
-    if not works_data: return
+    
+    try:
+        works_data = await get_data(endpoint)
+        
+        if not works_data:
+            print("⚠️ Brak danych z D365 lub błąd połączenia. Przerywam, nie czyszczę bazy (fail-safe).")
+            return
 
-    for w in works_data:
-        stmt = insert(ActiveWork).values(
-            workid=w.get("WarehouseWorkId"),
-            ordernum=w.get("SourceOrderNumber"),
-            workpoolid=w.get("WarehouseWorkPoolId"),
-            workstatus=str(w.get("WarehouseWorkStatus")),
-            whasalesitemqty=float(w.get("WHASalesItemQty") or 0),
-            whaadditionalzone2=w.get("WHAAdditionalZone2"),
-            workpriority=int(w.get("WorkPriority") or 0)
-        ).on_conflict_do_update(
-            index_elements=['workid'],
-            set_={
-                "workstatus": str(w.get("WarehouseWorkStatus")),
-                "whasalesitemqty": float(w.get("WHASalesItemQty") or 0),
-                "whaadditionalzone2": w.get("WHAAdditionalZone2")
-            }
-        )
-        await db.execute(stmt)
-    await db.commit()
+        print(f"📦 Pobrano {len(works_data)} rekordów z D365. Przygotowuję dane dla bazy...")
+
+        # Natywny, bezpieczny parser dat z D365 (radzi sobie z "Z" na końcu)
+        def safe_date(date_str):
+            if not date_str or str(date_str).startswith("1900"): 
+                return None
+            try:
+                return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        # 1. Zamiast zapisu wiersz po wierszu, zbieramy wszystko do jednej listy RAM
+        to_insert = []
+        sync_time = datetime.utcnow()
+        
+        for w in works_data:
+            to_insert.append({
+                "workid": w.get("WarehouseWorkId") or w.get("WorkId") or "UNKNOWN",
+                "ordernum": w.get("SourceOrderNumber", ""),
+                "shipmentid": w.get("ShipmentId", ""),
+                "loadid": w.get("LoadId", ""),
+                "waveid": w.get("WaveId", ""),
+                "workpoolid": w.get("WarehouseWorkPoolId", ""),
+                
+                "workstatus": w.get("WarehouseWorkStatus", ""),
+                "worktranstype": w.get("WarehouseWorkOrderType", ""),
+                
+                "whasalesitemqty": float(w.get("WHASalesItemQty") or 0.0),
+                "whasalesitemcount": int(w.get("WHASalesItemCount") or 0),
+                "whaworkitemsvolume": 0.0, # Brak w D365, wstawiamy domyślne 0
+                "whaworkitemsweight": 0.0, # Brak w D365, wstawiamy domyślne 0
+                
+                "whashippingdaterequested": safe_date(w.get("WHAShippingDateRequested")),
+                "workcreateddatetime": safe_date(w.get("WarehouseWorkProcessingStartDateTime")), 
+                
+                "lockeduser": w.get("WarehouseWorkLockingWarehouseMobileDeviceUserId", ""),
+                "whaadditionalzone2": w.get("WHAAdditionalZone2", ""),
+                "whacarriercode": w.get("WHACarrierCode", ""),
+                "whashipmentspecid": w.get("WHAShipmentSpecId", ""),
+                "targetlicenseplateid": w.get("TargetLicensePlateNumber", ""),
+                "inventlocationid": w.get("WarehouseId", ""),
+                "inventsiteid": w.get("InventorySiteId", ""),
+                
+                "workismultisku": w.get("IsWarehouseWorkBlocked", "No"),
+                "frozen": "No",
+                
+                "workpriority": int(w.get("WorkPriority") or w.get("WarehouseWorkPriority") or 0),
+                "worktemplatecode": "",
+                "containerid": w.get("ContainerId", ""),
+                "clusterid": "",
+                "dataareaid": w.get("dataAreaId", ""),
+                "lastprocessedchange_datetime": sync_time # Oznaczamy świeżą datą
+            })
+
+        # 2. ROZPOCZYNAMY OSTATECZNĄ TRANSAKCJĘ
+        if len(to_insert) > 0:
+            print(f"🧹 Usuwam stare 'duchy' z bazy i ładuję nową paczkę ({len(to_insert)} wierszy)...")
+            
+            # Krok A: Usuwamy całkowicie stare dane
+            await db.execute(delete(ActiveWork))
+            
+            # Krok B: Wrzucamy w PACZKACH (Batch Insert)
+            chunk_size = 1000 # Rozmiar paczki
+            for i in range(0, len(to_insert), chunk_size):
+                chunk = to_insert[i:i + chunk_size]
+                await db.execute(insert(ActiveWork), chunk)
+                print(f"📦 Wstawiono paczkę do bazy: {i + len(chunk)} / {len(to_insert)}...")
+        
+            await db.commit()
+            print(f"✅ SYNC ZAKOŃCZONY: Baza zaktualizowana bez zająknięcia!")
+        else:
+            print("⚠️ Paczka do zapisu jest pusta. Nie modyfikuję bazy.")
+
+    except Exception as e:
+    
+        await db.rollback() 
+        print(f"🔥 KRYTYCZNY BŁĄD PODCZAS PODMIANY DANYCH: {str(e)}")
+
+
 
 async def get_workpool_analytics(db: AsyncSession):
     """Analityka stref dla AI."""
@@ -309,63 +423,121 @@ async def get_workpool_analytics(db: AsyncSession):
         else: stats['picking'] += qty
     return stats
 
+
+def get_shift_number(hours_str: str) -> str:
+    if not hours_str: return "0"
+    
+    h = str(hours_str).lower().replace(" ", "").replace(":", "").replace("–", "-").strip()
+    
+    # ZMIANA I (Rano)
+    if any(x in h for x in ["06-14", "6-14", "0614", "614", "07-15", "08-16", "05-13"]): 
+        return "1"
+    
+    # ZMIANA II (Popołudnie)
+    if any(x in h for x in ["14-22", "1422", "12-22", "12-20", "1220", "13-21"]): 
+        return "2"
+    
+    # ZMIANA III (Noc)
+    if any(x in h for x in ["22-06", "2206", "22-6", "22-07"]): 
+        return "3"
+        
+    return "0"
+
 async def get_daily_plan(db: AsyncSession, target_date: date = None):
-    """Zwraca plan przydziałów na dany dzień, wzbogacony o matrycę skilli."""
+    """Zwraca plan przydziałów, wczytując zapisane już zadania z bazy."""
     if target_date is None: 
         target_date = date.today()
-        
-    sched_stmt = select(Schedule).where(Schedule.work_date == target_date)
+    
+    from sqlalchemy import cast, Date
+
+    # 1. Pobieramy grafiki (kto powinien być w pracy)
+    sched_stmt = select(Schedule).where(cast(Schedule.work_date, Date) == target_date)
     sched_res = await db.execute(sched_stmt)
     schedules = sched_res.scalars().all()
-    
-    assign_stmt = select(ShiftAssignment).where(ShiftAssignment.assignment_date == target_date)
+
+    # 2. Pobieramy JUŻ ZAPISANE przypisania
+    assign_stmt = select(ShiftAssignment).where(cast(ShiftAssignment.assignment_date, Date) == target_date)
     assign_res = await db.execute(assign_stmt)
     assignments = {a.worker_login: a.task for a in assign_res.scalars().all()}
 
+    # 3. Pobieramy wydajność (skille)
     perf_stmt = select(WorkerPerformance)
     perf_res = await db.execute(perf_stmt)
-    performances = {p.login: p for p in perf_res.scalars().all()}
+    performances = {str(p.login): p for p in perf_res.scalars().all()}
 
     plan_data = []
     for s in schedules:
         hours = str(s.planned_shift).strip()
-        if not hours or hours.lower() in ['nan', 'urlop', 'zw', 'none']: 
+        if not hours or hours.lower() in ['nan', 'urlop', 'zw', 'none', 'ub']:
             continue
             
-        p = performances.get(s.login)
-        
+        worker_id = str(s.login)
+        p = performances.get(worker_id)
+        current_task = assignments.get(worker_id, "unassigned")
+
         plan_data.append({
-            "login": str(s.login),               # <--- TEN KLUCZ ZWRÓCI LOGINY NA EKRAN!
-            "worker_login": str(s.login),        # Zostawiamy dla pewności
-            "name": str(s.login),                # Czasem frontendy UI szukają klucza 'name'
+            "worker_login": worker_id,
+            "full_name": s.full_name,  # <--- TO BYŁ BRAKUJĄCY ELEMENT!
             "shift": get_shift_number(hours),
             "hours": hours,
-            "task": assignments.get(s.login, 'unassigned'),
+            "task": current_task,
             "picking": getattr(p, 'picking', 0) if p else 0,
             "packing": getattr(p, 'packing', 0) if p else 0,
-            "putaway": getattr(p, 'putaway', 0) if p else 0,
             "receiving": getattr(p, 'receiving', 0) if p else 0,
-            "sorting": getattr(p, 'sorting', 0) if p else 0,
-            "forklift": getattr(p, 'forklift', 0) if p else 0,
-            "returns": getattr(p, 'returns', 0) if p else 0,
+            "putaway": getattr(p, 'putaway', 0) if p else 0,
+            "sorting": getattr(p, 'sorting', 0) if p else 0
         })
         
     return plan_data
 
+
+
 async def save_daily_plan(assignments: list, db: AsyncSession, target_date: date = None):
-    """Zapisuje ręczne przydziały do stref."""
-    if target_date is None: target_date = date.today()
-    for item in assignments:
-        stmt = insert(ShiftAssignment).values(
-            worker_login=item['worker_login'], shift=item['shift'],
-            task=item['task'], assignment_date=target_date
-        ).on_conflict_do_update(
-            index_elements=['worker_login', 'assignment_date'],
-            set_={"task": item['task'], "shift": item['shift']}
+    """
+    Kuloodporny zapis planu: Usuwa stare i wstawia nowe rekordy.
+    """
+    if not assignments:
+        return {"status": "empty"}
+    
+    # Jeśli data nie przyszła z Reacta, bierzemy dzisiejszą
+    if target_date is None: 
+        target_date = date.today()
+
+    try:
+        # Wyciągamy loginy pracowników, których właśnie planujemy
+        worker_logins = [str(item['worker_login']) for item in assignments]
+
+        # 1. USUWANIE STARYCH PRZYDZIAŁÓW (Tylko dla tych loginów na ten konkretny dzień)
+        del_stmt = delete(ShiftAssignment).where(
+            cast(ShiftAssignment.assignment_date, Date) == target_date,
+            ShiftAssignment.worker_login.in_(worker_logins)
         )
-        await db.execute(stmt)
-    await db.commit()
-    return {"status": "success"}
+        await db.execute(del_stmt)
+
+        # 2. PRZYGOTOWANIE NOWYCH DANYCH
+        values_to_insert = [
+            {
+                "worker_login": str(item['worker_login']),
+                "shift": str(item['shift']),
+                "task": str(item['task']),
+                "assignment_date": target_date
+            }
+            for item in assignments
+        ]
+
+        # 3. MASOWE WSTAWIANIE
+        if values_to_insert:
+            await db.execute(insert(ShiftAssignment).values(values_to_insert))
+        
+        await db.commit()
+        
+        print(f"🚀 Zapis zakończony sukcesem: {len(values_to_insert)} osób na dzień {target_date}")
+        return {"status": "success", "count": len(values_to_insert)}
+
+    except Exception as e:
+        await db.rollback()
+        print(f"❌ KRYTYCZNY BŁĄD ZAPISU: {str(e)}")
+        raise e
 
 # ==============================================================================
 # --- DODATKOWE FUNKCJE POMOCNICZE (DLA AI) ---
@@ -386,7 +558,7 @@ def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
             start_h = int(parts[0])
             end_h = int(parts[1])
             
-            # Obsługa zmiany nocnej (np. '22-06')
+            # Obsługa zmiany nocnej ('22-06')
             if start_h > end_h:
                 return current_time.hour >= start_h or current_time.hour < end_h
             else:
@@ -395,3 +567,50 @@ def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
             return False
             
     return False
+
+
+# ==============================================================================
+# 5. ZARZĄDZANIE KONSTRYKCJAMI AI (MIN/MAX/PRIO)
+# ==============================================================================
+
+async def get_all_constraints(db: AsyncSession):
+    """Pobiera wszystkie reguły stref posortowane po priorytecie (P1 -> P6)."""
+    stmt = select(ZoneConstraint).order_by(ZoneConstraint.priority.asc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+async def update_or_create_constraints(db: AsyncSession, constraints_data: list):
+    try:
+        for item in constraints_data:
+            # Pobieramy priorytet (np. "P1") i zamieniamy na samą liczbę (1)
+            raw_prio = str(item.get('priority', 'P5'))
+            # Wyciągamy tylko cyfry z tekstu
+            prio_int = int(''.join(filter(str.isdigit, raw_prio)) or 5)
+
+            vals = {
+                "zone_name": item.get('zone_name'),
+                "category": item.get('category', 'Outbound'),
+                "priority": prio_int, # <--- Teraz wysyłamy czysty INTEGER (np. 1)
+                "s1_min": int(item.get('s1_min') or 0),
+                "s1_max": int(item.get('s1_max') or 0),
+                "s2_min": int(item.get('s2_min') or 0),
+                "s2_max": int(item.get('s2_max') or 0),
+                "s3_min": int(item.get('s3_min') or 0),
+                "s3_max": int(item.get('s3_max') or 0),
+            }
+
+            if not vals["zone_name"]:
+                continue
+
+            stmt = insert(ZoneConstraint).values(**vals).on_conflict_do_update(
+                index_elements=['zone_name'],
+                set_={k: v for k, v in vals.items() if k != 'zone_name'}
+            )
+            await db.execute(stmt)
+        
+        await db.commit()
+        return True
+    except Exception as e:
+        await db.rollback()
+        print(f"❌ BŁĄD ZAPISU DO DB: {str(e)}")
+        raise e

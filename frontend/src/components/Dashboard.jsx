@@ -1,90 +1,66 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import api from '../api';
+import React from 'react';
+import { Activity, Box, Users, Zap } from 'lucide-react';
 
 const Dashboard = () => {
-    const [stats, setStats] = useState({});
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        const fetchStats = async () => {
-            try {
-                const response = await api.get('/analytics/workpools');
-                const data = response.data.workpools || {};
-                setStats(data);
-                setLoading(false);
-            } catch (err) {
-                console.error("Błąd pobierania danych:", err);
-                setLoading(false);
-            }
-        };
-        fetchStats();
-    }, []);
-
-    const getTotalWorks = () => {
-        return Object.values(stats).reduce((acc, curr) => {
-            const val = typeof curr === 'number' ? curr : (curr?.count || 0);
-            return acc + Number(val);
-        }, 0);
-    };
-
-    const getVal = (key) => {
-        const entry = stats[key];
-        if (typeof entry === 'number') return entry;
-        if (typeof entry === 'object' && entry !== null) return entry.count || 0;
-        return 0;
-    };
-
     return (
-        <div className="space-y-8">
-            <header>
-                <h1 className="text-2xl font-semibold tracking-tight text-white/90">witaj w Adamowie, pysiaczku.</h1>
-                <p className="text-gray-500 text-sm mt-1">aktualny stan operacyjny magazynu.</p>
-            </header>
+        <div className="space-y-6 animate-in fade-in duration-500">
+            
+            {/* GÓRNY PASEK WIDGETÓW */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                
+                {/* Główny licznik */}
+                <div className="md:col-span-2 bg-white border border-slate-200 rounded-2xl p-8 shadow-sm flex flex-col justify-between">
+                    <div className="flex justify-between items-start mb-4">
+                        <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-[#8b5cf6] rounded-full animate-pulse"></div>
+                            <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Live System Load</h3>
+                        </div>
+                    </div>
+                    <div className="flex items-end gap-4">
+                        <span className="text-6xl font-black text-slate-800 tracking-tighter">7,432</span>
+                        <span className="text-green-500 font-bold text-sm mb-2">+12.4% vs wczoraj</span>
+                    </div>
+                </div>
+                
+                {/* Status Systemu */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm flex flex-col justify-between">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-6">Status Węzła ADM-01</h3>
+                    <div className="flex items-center gap-4">
+                        <div className="p-3.5 bg-green-50 text-green-600 rounded-xl">
+                            <Zap size={24} />
+                        </div>
+                        <div>
+                            <p className="text-base font-bold text-slate-800">Systemy w normie</p>
+                            <p className="text-xs text-slate-500 font-medium mt-1">Brak opóźnień (24ms)</p>
+                        </div>
+                    </div>
+                </div>
 
-            {loading ? (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-pulse">
-                    {[1, 2, 3].map(i => (
-                        <div key={i} className="h-32 bg-white/5 rounded-2xl border border-white/5" />
-                    ))}
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                    <StatCard 
-                        label="suma wszystkich prac" 
-                        val={getTotalWorks()} 
-                        color="border-blue-500/10" 
-                    />
-                    <StatCard 
-                        label="strefa sortowania" 
-                        val={getVal('SORT')} 
-                        color="border-purple-500/10" 
-                    />
-                    <StatCard 
-                        label="strefa kompletacji" 
-                        val={getVal('PICK')} 
-                        color="border-green-500/10" 
-                    />
-                </div>
-            )}
-            
-            <div className="p-10 border border-white/5 rounded-2xl bg-white/[0.01] text-[10px] text-gray-700 text-center uppercase tracking-widest">
-                dane zsynchronizowane z Dynamics 365: {new Date().toLocaleTimeString()}
             </div>
-            
+
+            {/* SIATKA MNIEJSZYCH WIDGETÓW */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <MiniCard label="Picking" val="2.4k" icon={<Box size={18}/>} />
+                <MiniCard label="Putaway" val="1.1k" icon={<Zap size={18}/>} />
+                <MiniCard label="Sorting" val="843" icon={<Activity size={18}/>} />
+                <MiniCard label="Active Workers" val="142" icon={<Users size={18}/>} />
+            </div>
+
         </div>
     );
 };
 
-const StatCard = ({ label, val, color }) => (
-    <motion.div 
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className={`p-6 rounded-2xl bg-white/[0.02] border ${color} backdrop-blur-sm`}
-    >
-        <p className="text-gray-500 text-[10px] uppercase tracking-[0.2em] font-medium">{label}</p>
-        <h2 className="text-2xl font-bold mt-2 text-white/80">{val}</h2>
-    </motion.div>
+// Pomocniczy mini-komponent dla małych kart
+const MiniCard = ({ label, val, icon }) => (
+    <div className="bg-white border border-slate-200 rounded-xl p-6 flex justify-between items-center shadow-sm hover:border-[#8b5cf6]/50 transition-colors cursor-default group">
+        <div>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+            <p className="text-2xl font-bold text-slate-800">{val}</p>
+        </div>
+        <div className="p-3 bg-slate-50 rounded-xl text-slate-400 group-hover:text-[#8b5cf6] transition-colors">
+            {icon}
+        </div>
+    </div>
 );
 
 export default Dashboard;

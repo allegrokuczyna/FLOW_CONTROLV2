@@ -35,14 +35,14 @@ async def get_replenishment_open_works(db: AsyncSession):
     """Pobieranie otwartych prac uzupełnień (Replenishment)."""
     # Lista czystych nazw z Proda
     target_pools = [
-        'u_adm-01_hv', 'u_adm-01_mez', 'u_adm-01_pw', 
-        'u_adm-01_std', 'u_adm-01_kartony', 'u_adm-01_wyc'
+        'u_adm-01_ hv', 'u_adm-01_ mez', 'u_adm-01_ pw', 
+        'u_adm-01_ std', 'u_adm-01_ kartony', 'u_adm-01_ wyc'
     ]
     
     stmt = (
         select(ActiveWork)
         .where(
-            func.lower(func.replace(ActiveWork.workpoolid, ' ', '')).in_(target_pools),
+            func.lower(ActiveWork.workpoolid).in_(target_pools),
             ActiveWork.workstatus == 'Open'
         )
         .order_by(ActiveWork.workid)
@@ -59,7 +59,7 @@ async def get_all_mezz_open_works(db: AsyncSession):
     stmt = (
         select(ActiveWork)
         .where(
-            func.lower(func.replace(ActiveWork.workpoolid, ' ', '')).in_(target_mez),
+            func.lower(ActiveWork.workpoolid).in_(target_mez),
             ActiveWork.workstatus == 'Open'
         )
         .order_by(ActiveWork.workid)
@@ -68,6 +68,58 @@ async def get_all_mezz_open_works(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
+
+
+#Pobieranie otwartych prac przyjécia mezanina
+async def get_inbound_works_mezz(db: AsyncSession):
+    """Pobierania prac przyjecia towary"""
+    target_inound = ['przyjęcie mezanina']
+
+    s_inb = (
+        select(ActiveWork)
+        .where
+        (func.lower(ActiveWork.workpoolid).in_(target_inound),
+            ActiveWork.workstatus == 'Open'
+        )
+        .order_by(ActiveWork.ordernum)
+    )
+
+    result = await db.execute(s_inb)
+    return result.scalars().all()
+
+
+async def get_multi_orders(db: AsyncSession):
+    """pobieranie wszystkich otwartych zamówien wielosztukowych"""
+
+    target_multi = ['adm-01_wiel']
+
+    s_multi =(
+        select(ActiveWork)
+        .where(func.lower(ActiveWork.workpoolid).in_(target_multi),
+               ActiveWork.workstatus == 'Open').order_by(ActiveWork.ordernum)
+    )
+
+    result = await db.execute(s_multi)
+    return result.scalars().all()
+
+
+async def get_one_open_pieces(db: AsyncSession):
+    """pobieranie jednosztukowych zamówien"""
+
+    target_single = ['adm-01_jedn']
+
+    s_single = (
+        select(ActiveWork)
+        .where(func.lower(ActiveWork.workpoolid).in_(target_single),
+               ActiveWork.workstatus == 'Open').order_by(ActiveWork.ordernum)
+    )
+
+    result = await db.execute(s_single)
+    return result.scalars().all()
+
+
+    
+    
 
 # ==============================================================================
 # SEKCJA: PROGNOZY I PLANOWANIE (FORECAST)
@@ -78,7 +130,7 @@ async def get_upcoming_forecast(db: AsyncSession):
     now = datetime.utcnow()
     
     # ZWIĘKSZONE OKNO CZASOWE: 
-    # Bierzemy od 4 godzin wstecz (żeby widzieć, co się działo) do 24 godzin w przód
+    # 4 godziny wstecz.
     start_time = now - timedelta(hours=4)
     end_time = now + timedelta(hours=24)
 

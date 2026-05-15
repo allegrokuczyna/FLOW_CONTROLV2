@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Flow Control API V2", lifespan=lifespan)
 
 # router z endpointami
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
 
 @app.get("/")
 def read_root():

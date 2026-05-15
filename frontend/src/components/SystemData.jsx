@@ -1,250 +1,208 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Database, Calendar, TrendingUp, Star, CalendarClock, Loader2, Search, Filter } from 'lucide-react';
-import api from '../api';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { Database, CalendarDays, Save, RefreshCcw } from 'lucide-react';
 
 const SystemData = () => {
-    const [activeTab, setActiveTab] = useState(null);
-    const [data, setData] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
+    const getTodayDate = () => new Date().toISOString().split('T')[0];
 
-    // --- NOWE STANY DLA FILTRÓW ---
-    const [filters, setFilters] = useState({
-        login: '',
-        shift: '',
-        hours: '',
-        task: ''
-    });
+    // --- STANY ---
+    const [date, setDate] = useState(getTodayDate());
+    const [shift, setShift] = useState('1');
+    const [totalWorkers, setTotalWorkers] = useState(0);
+    const [isLoading, setIsLoading] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
 
-    const tabs = {
-        grafik_dzis: {
-            title: "Grafik Pracowników - Dzisiaj",
-            icon: <Calendar size={16} />,
-            endpoint: '/plan/daily',
-            showFilters: true, // Flaga: pokazuj filtry dla tej zakładki
-            columns: [
-                { key: 'work_date', label: 'Data' },
-                { key: 'login', label: 'Pracownik' },
-                { key: 'hours', label: 'Godziny' },
-                { key: 'shift', label: 'Zmiana' },
-                { key: 'task', label: 'Zadanie / Strefa' }
-            ]
-        },
-        grafik_jutro: {
-            title: "Grafik Pracowników - Jutro",
-            icon: <CalendarClock size={16} />,
-            endpoint: () => {
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                return `/plan/daily?target_date=${tomorrow.toISOString().split('T')[0]}`;
-            },
-            showFilters: true,
-            columns: [
-                { key: 'work_date', label: 'Data' },
-                { key: 'login', label: 'Pracownik' },
-                { key: 'hours', label: 'Godziny' },
-                { key: 'shift', label: 'Zmiana' },
-                { key: 'task', label: 'Zadanie / Strefa' }
-            ]
-        },
-        forecast: {
-            title: "Prognoza Spływu (Forecast)",
-            icon: <TrendingUp size={16} />,
-            endpoint: '/works/forecast_upcoming',
-            columns: [
-                { key: 'forecast_date', label: 'Data' },
-                { key: 'hour_from', label: 'Godzina', format: (val) => new Date(val).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) },
-                { key: 'forecast_pcs', label: 'Prognozowane Sztuki' }
-            ]
-        },
-        productivity: {
-            title: "Matryca Kompetencji",
-            icon: <Star size={16} />,
-            endpoint: '/productivity',
-            columns: [
-                { key: 'login', label: 'Pracownik' },
-                { key: 'picking', label: 'Picking' },
-                { key: 'packing', label: 'Packing' },
-                { key: 'putaway', label: 'Putaway' },
-                { key: 'forklift', label: 'Forklift' }
-            ]
+    // Domyślne wiersze zgodne z Twoją strukturą bazy
+    const initialConstraints = [
+        { zone_name: 'Rozładunek', category: 'INBOUND', priority: 'P1', s1_min: 0, s1_max: 0, s2_min: 1, s2_max: 2, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Przyjęcie', category: 'INBOUND', priority: 'P3', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Putaway', category: 'INBOUND', priority: 'P4', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Sprzątanie', category: 'INBOUND', priority: 'P2', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Nieproduktywne', category: 'INBOUND', priority: 'P5', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Pick', category: 'OUTBOUND', priority: 'P2', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Pack', category: 'OUTBOUND', priority: 'P3', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Sort', category: 'OUTBOUND', priority: 'P4', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
+        { zone_name: 'Załadunki', category: 'OUTBOUND', priority: 'P1', s1_min: 0, s1_max: 0, s2_min: 1, s2_max: 3, s3_min: 0, s3_max: 0 }
+    ];
+
+    const [constraints, setConstraints] = useState(initialConstraints);
+
+    // --- 1. POBIERANIE KONFIGURACJI Z BAZY ---
+    const loadConstraints = async () => {
+        try {
+            const res = await axios.get('/api/settings/constraints');
+            if (res.data && res.data.length > 0) {
+                // Konwertujemy priorytety z liczb (np. 1) na format wizualny "P1"
+                const mappedData = res.data.map(item => ({
+                    ...item,
+                    priority: String(item.priority).includes('P') ? item.priority : `P${item.priority}`
+                }));
+                setConstraints(mappedData);
+            }
+        } catch (e) {
+            console.error("Błąd ładowania z DB, używam domyślnych.");
         }
     };
 
-    // Resetowanie filtrów przy zmianie zakładki
-    useEffect(() => {
-        setFilters({ login: '', shift: '', hours: '', task: '' });
-    }, [activeTab]);
+    // --- 2. POBIERANIE SUMY LUDZI Z GRAFIKU ---
+    const fetchWorkersCount = async () => {
+        setIsLoading(true);
+        try {
+            const res = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
+            setTotalWorkers(res.data.length || 0);
+        } catch (error) {
+            setTotalWorkers(0);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-    useEffect(() => {
-        if (!activeTab) return;
-        const fetchData = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const url = typeof tabs[activeTab].endpoint === 'function' ? tabs[activeTab].endpoint() : tabs[activeTab].endpoint;
-                const response = await api.get(url);
-                const resultData = response.data.data || response.data.results || response.data;
-                setData(Array.isArray(resultData) ? resultData : []);
-            } catch (err) {
-                setError("Błąd pobierania danych.");
-            }
-            setLoading(false);
-        };
-        fetchData();
-    }, [activeTab]);
+    useEffect(() => { loadConstraints(); }, []);
+    useEffect(() => { fetchWorkersCount(); }, [date, shift]);
 
-    // --- LOGIKA FILTROWANIA ---
-    const filteredData = useMemo(() => {
-        return data.filter(item => {
-            const matchLogin = item.login?.toLowerCase().includes(filters.login.toLowerCase());
-            const matchShift = filters.shift === '' || String(item.shift) === filters.shift;
-            const matchHours = filters.hours === '' || item.hours === filters.hours;
-            const matchTask = filters.task === '' || item.task === filters.task;
-            return matchLogin && matchShift && matchHours && matchTask;
-        });
-    }, [data, filters]);
+    // --- 3. LOGIKA KALKULATORA ---
+    const activeMinKey = `s${shift}_min`;
+    const totalAssignedMin = constraints.reduce((sum, item) => sum + (Number(item[activeMinKey]) || 0), 0);
+    const remainingWorkers = totalWorkers - totalAssignedMin;
 
-    // Wyciąganie unikalnych wartości dla selectów (tylko z aktualnych danych)
-    const uniqueValues = useMemo(() => {
-        return {
-            shifts: [...new Set(data.map(i => String(i.shift)))].filter(v => v && v !== 'undefined').sort(),
-            hours: [...new Set(data.map(i => i.hours))].filter(v => v && v !== 'undefined').sort(),
-            tasks: [...new Set(data.map(i => i.task))].filter(v => v && v !== 'undefined').sort()
-        };
-    }, [data]);
+    const handleInputChange = (zoneName, field, value) => {
+        const numValue = parseInt(value) || 0;
+        setConstraints(prev => prev.map(c => 
+            c.zone_name === zoneName ? { ...c, [field]: numValue < 0 ? 0 : numValue } : c
+        ));
+    };
+
+    // --- 4. ZAPIS DO BAZY (Z KONWERSJĄ TYPÓW) ---
+    const handleSave = async () => {
+        setIsSaving(true);
+        try {
+            // Oczyszczamy dane przed wysyłką: "P1" -> 1 (Integer dla Postgresa)
+            const dataToSave = constraints.map(c => ({
+                ...c,
+                priority: parseInt(String(c.priority).replace(/\D/g, '')) || 5
+            }));
+
+            await axios.post('/api/settings/constraints', dataToSave);
+            alert("✅ Konfiguracja AI zapisana pomyślnie.");
+            loadConstraints(); // Odświeżamy dane
+        } catch (error) {
+            console.error(error);
+            alert("❌ Błąd zapisu! Sprawdź logi backendu.");
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const getPriorityBadge = (p) => {
+        const pValue = String(p).includes('P') ? p : `P${p}`;
+        const styles = { P1: 'bg-red-500', P2: 'bg-orange-500', P3: 'bg-amber-400', P4: 'bg-slate-300' };
+        return <span className={`px-1.5 py-0.5 rounded text-[9px] font-black text-white ${styles[pValue] || 'bg-slate-200'}`}>{pValue}</span>;
+    };
 
     return (
-        <div className="max-w-7xl mx-auto p-6 space-y-8 relative text-gray-200">
-            <header className="space-y-6 border-b border-white/5 pb-6">
-                <div>
-                    <h1 className="text-2xl font-semibold tracking-tight text-white/90 underline decoration-blue-500/40 underline-offset-8">
-                        baza danych systemowych
-                    </h1>
-                    <p className="text-gray-500 text-sm mt-2">zarządzanie grafikami, skryptami i forecastem.</p>
+        <div className="flex flex-col h-full bg-[#f8fafc] overflow-hidden p-4">
+            
+            {/* PANEL GÓRNY (PASEK CZARNY) */}
+            <div className="bg-[#1e2433] rounded-t-xl p-3 flex justify-between items-center shadow-md shrink-0">
+                <div className="flex items-center gap-3">
+                    <Database className="text-indigo-400" size={18} />
+                    <h2 className="text-xs font-black text-white tracking-widest uppercase">AI Constraints Manager</h2>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                    {Object.entries(tabs).map(([key, tab]) => (
-                        <button
-                            key={key}
-                            onClick={() => setActiveTab(key)}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-[10px] font-bold uppercase tracking-widest transition-all ${
-                                activeTab === key 
-                                ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20' 
-                                : 'bg-white/[0.02] text-gray-500 border-white/5 hover:border-white/20 hover:text-gray-300'
-                            }`}
-                        >
-                            {tab.icon}
-                            {tab.title.split(' - ')[0]}
-                        </button>
-                    ))}
-                </div>
-            </header>
-
-            {/* --- PASEK FILTRÓW (TYLKO DLA GRAFIKU) --- */}
-            <AnimatePresence>
-                {activeTab && tabs[activeTab]?.showFilters && data.length > 0 && (
-                    <motion.div 
-                        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-                        className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4 bg-white/[0.02] border border-white/5 rounded-2xl"
-                    >
-                        <div className="relative">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600" size={14} />
-                            <input 
-                                type="text"
-                                placeholder="Szukaj loginu..."
-                                value={filters.login}
-                                onChange={(e) => setFilters({...filters, login: e.target.value})}
-                                className="w-full bg-black/20 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-xs focus:border-blue-500 outline-none transition-colors"
-                            />
-                        </div>
-
-                        <select 
-                            value={filters.shift}
-                            onChange={(e) => setFilters({...filters, shift: e.target.value})}
-                            className="bg-black/20 border border-white/10 rounded-lg px-4 py-2 text-xs focus:border-blue-500 outline-none appearance-none"
-                        >
-                            <option value="">Wszystkie zmiany</option>
-                            {uniqueValues.shifts.map(v => <option key={v} value={v}>Zmiana {v}</option>)}
-                        </select>
-
-                        <select 
-                            value={filters.hours}
-                            onChange={(e) => setFilters({...filters, hours: e.target.value})}
-                            className="bg-black/20 border border-white/10 rounded-lg px-4 py-2 text-xs focus:border-blue-500 outline-none appearance-none"
-                        >
-                            <option value="">Wszystkie godziny</option>
-                            {uniqueValues.hours.map(v => <option key={v} value={v}>{v}</option>)}
-                        </select>
-
-                        <select 
-                            value={filters.task}
-                            onChange={(e) => setFilters({...filters, task: e.target.value})}
-                            className="bg-black/20 border border-white/10 rounded-lg px-4 py-2 text-xs focus:border-blue-500 outline-none appearance-none"
-                        >
-                            <option value="">Wszystkie zadania</option>
-                            {uniqueValues.tasks.map(v => <option key={v} value={v}>{v}</option>)}
-                        </select>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-
-            {/* OBSZAR WYŚWIETLANIA DANYCH */}
-            <div className="relative min-h-[400px] border border-white/5 rounded-[2rem] bg-white/[0.01] backdrop-blur-sm overflow-hidden p-6">
-                {!activeTab && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 space-y-4">
-                        <Database size={48} className="opacity-20" />
-                        <p className="text-sm font-light tracking-widest uppercase">Wybierz kategorię z menu powyżej</p>
+                <div className="flex items-center gap-3">
+                    <div className="flex bg-[#151923] p-1 rounded-lg border border-slate-700">
+                        {['1', '2', '3'].map(s => (
+                            <button 
+                                key={s} 
+                                onClick={() => setShift(s)} 
+                                className={`px-4 py-1.5 rounded text-[10px] font-black transition-all ${shift === s ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
+                            >
+                                Shift {s}
+                            </button>
+                        ))}
                     </div>
-                )}
+                    <div className="flex items-center bg-[#151923] p-1 rounded-lg border border-slate-700">
+                        <CalendarDays size={14} className="text-indigo-400 ml-2" />
+                        <input 
+                            type="date" 
+                            value={date} 
+                            onChange={e => setDate(e.target.value)} 
+                            className="bg-transparent text-[10px] font-black px-2 py-1 outline-none text-slate-300 [color-scheme:dark]" 
+                        />
+                    </div>
+                    <button 
+                        onClick={handleSave} 
+                        disabled={isSaving} 
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2 rounded-lg text-[10px] font-black uppercase flex items-center gap-2 transition-all disabled:opacity-50"
+                    >
+                        {isSaving ? <RefreshCcw size={12} className="animate-spin" /> : <Save size={12} />} Zapisz
+                    </button>
+                </div>
+            </div>
 
-                <AnimatePresence mode="wait">
-                    {loading ? (
-                        <motion.div key="loader" className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a]/50 z-10">
-                            <Loader2 size={32} className="text-blue-500 animate-spin" />
-                        </motion.div>
-                    ) : (
-                        <motion.div key="content" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-                            {activeTab && (
-                                <div className="flex items-center gap-3 text-blue-400 mb-2">
-                                    <h2 className="text-sm font-medium text-white/70 uppercase tracking-widest">{tabs[activeTab].title}</h2>
-                                    <span className="text-[10px] text-gray-600 font-mono ml-auto">Wyniki: {filteredData.length} / {data.length}</span>
-                                </div>
-                            )}
+            {/* PRZELICZNIK (MAŁY PASEK POD NAGŁÓWKIEM) */}
+            <div className="bg-white border-x border-b border-slate-200 rounded-b-xl p-2.5 mb-4 shadow-sm flex items-center gap-6 text-[10px] font-bold shrink-0">
+                <div className="flex items-center gap-2 pl-2">
+                    <span className="text-slate-400 uppercase tracking-tighter">Suma grafik:</span>
+                    <span className="text-slate-900 font-black text-xs">{totalWorkers}</span>
+                </div>
+                <div className="text-slate-300 font-light">|</div>
+                <div className="flex items-center gap-2">
+                    <span className="text-amber-500 uppercase tracking-tighter">Zablokowani (Min Staff):</span>
+                    <span className="text-amber-600 font-black text-xs">{totalAssignedMin}</span>
+                </div>
+                <div className="text-slate-300 font-light">|</div>
+                <div className="bg-indigo-50 px-4 py-1.5 rounded-md flex items-center gap-2">
+                    <span className="text-indigo-500 uppercase tracking-tighter">Dostępni dla AI:</span>
+                    <span className={`font-black text-sm ${remainingWorkers < 0 ? 'text-red-600' : 'text-indigo-700'}`}>
+                        {remainingWorkers}
+                    </span>
+                </div>
+            </div>
 
-                            <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20">
-                                <table className="w-full text-sm text-left">
-                                    <thead className="text-[10px] text-gray-500 uppercase bg-white/5 tracking-tighter">
-                                        <tr>
-                                            {activeTab && tabs[activeTab].columns.map((col, idx) => (
-                                                <th key={idx} className="px-6 py-3 font-semibold">{col.label}</th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-white/5">
-                                        {filteredData.length > 0 ? filteredData.map((row, rIndex) => (
-                                            <tr key={rIndex} className="hover:bg-white/[0.02] transition-colors">
-                                                {tabs[activeTab].columns.map((col, cIndex) => (
-                                                    <td key={cIndex} className="px-6 py-3 whitespace-nowrap text-gray-400 font-light text-xs">
-                                                        {col.format ? col.format(row[col.key]) : (row[col.key] || '-')}
-                                                    </td>
-                                                ))}
-                                            </tr>
-                                        )) : activeTab && (
-                                            <tr>
-                                                <td colSpan={tabs[activeTab].columns.length} className="px-6 py-12 text-center text-gray-600 italic text-xs">
-                                                    Nie znaleziono pracowników spełniających kryteria.
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
+            {/* TABELA (KOMPAKTOWA) */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar bg-white border border-slate-200 rounded-xl shadow-sm">
+                <table className="w-full text-left border-collapse table-fixed">
+                    <thead className="bg-[#2D3748] text-white text-[9px] uppercase tracking-widest sticky top-0 z-20 shadow-sm">
+                        <tr>
+                            <th className="px-4 py-3 w-1/3">Strefa Operacyjna</th>
+                            <th className="px-4 py-3 text-center w-20">Prio</th>
+                            <th className="px-4 py-3 text-center bg-[#252d3a] w-28">Min (S{shift})</th>
+                            <th className="px-4 py-3 text-center bg-[#1e2433] w-28">Max (S{shift})</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-[11px]">
+                        {['INBOUND', 'OUTBOUND'].map(cat => (
+                            <React.Fragment key={cat}>
+                                <tr className="bg-slate-800 text-slate-400">
+                                    <td colSpan="4" className="text-[8px] font-black uppercase tracking-[0.2em] px-4 py-1">{cat}</td>
+                                </tr>
+                                {constraints.filter(c => c.category === cat).map((row) => (
+                                    <tr key={row.zone_name} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                                        <td className="px-4 py-2 font-bold text-slate-700 truncate">{row.zone_name}</td>
+                                        <td className="px-4 py-2 text-center">{getPriorityBadge(row.priority)}</td>
+                                        <td className="px-4 py-2 text-center bg-slate-50/30">
+                                            <input 
+                                                type="number" 
+                                                value={row[`s${shift}_min`] || 0} 
+                                                onChange={e => handleInputChange(row.zone_name, `s${shift}_min`, e.target.value)}
+                                                className="w-12 text-center font-black border border-slate-200 rounded py-0.5 outline-none focus:border-indigo-500"
+                                            />
+                                        </td>
+                                        <td className="px-4 py-2 text-center">
+                                            <input 
+                                                type="number" 
+                                                value={row[`s${shift}_max`] || 0} 
+                                                onChange={e => handleInputChange(row.zone_name, `s${shift}_max`, e.target.value)}
+                                                className="w-12 text-center font-black border border-slate-200 rounded py-0.5 outline-none focus:border-indigo-500"
+                                            />
+                                        </td>
+                                    </tr>
+                                ))}
+                            </React.Fragment>
+                        ))}
+                    </tbody>
+                </table>
             </div>
         </div>
     );

@@ -1,55 +1,60 @@
 import React from 'react';
-import { motion } from 'framer-motion';
-// Dodałem ikonę Server dla lepszego rozróżnienia od synchronizacji
-import { LayoutDashboard, Database, Cpu, Activity, LogOut, Calendar, Server } from 'lucide-react';
+import { LayoutDashboard, Calendar, Activity, Database, Server, Cpu, Settings, LogOut , Table} from 'lucide-react';
 
-const Sidebar = ({ activeTab, setActiveTab, onLogout }) => {
-    const menuItems = [
-        { id: 'dashboard', label: 'panel główny', icon: <LayoutDashboard size={18} /> },
-        { id: 'plan', label: 'plan pracy', icon: <Calendar size={18} /> },
-        { id: 'sync', label: 'synchronizacja', icon: <Database size={18} /> },
-        // NOWA POZYCJA
-        { id: 'dane', label: 'baza systemowa', icon: <Server size={18} /> },
-        { id: 'ai', label: 'analiza ai', icon: <Cpu size={18} /> },
-        { id: 'live', label: 'live status', icon: <Activity size={18} /> },
-    ];
+const Sidebar = ({ activeTab, setActiveTab }) => {
+  // Tutaj definiujemy TYLKO przyciski menu
+  const menu = [
+    { id: 'dashboard', icon: <LayoutDashboard size={20} />, title: 'Dashboard' },
+    { id: 'plan', icon: <Calendar size={20} />, title: 'Work Plan' },
+    { id: 'live', icon: <Activity size={20} />, title: 'Live Status' },
+    { id: 'sync', icon: <Database size={20} />, title: 'D365 Sync' },
+    { id: 'dane', icon: <Server size={20} />, title: 'System Data' },
+    { id: 'ai', icon: <Cpu size={20} />, title: 'AI Engine' },
+    { id: 'schedule', icon: <Table size={20} />, title: 'Full Schedule' },
+  ];
 
-    return (
-        <motion.div 
-            initial={{ x: 50, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            className="w-64 h-screen bg-[#0d0f14] border-l border-white/5 p-6 flex flex-col"
-        >
-            <div className="mb-10 px-2">
-                <h2 className="text-blue-500 font-medium text-lg tracking-tight">flow control</h2>
-            </div>
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    window.location.reload();
+  };
 
-            <nav className="flex-1 space-y-1">
-                {menuItems.map((item) => (
-                    <button
-                        key={item.id}
-                        onClick={() => setActiveTab(item.id)}
-                        className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl transition-all text-sm ${
-                            activeTab === item.id 
-                            ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' 
-                            : 'text-gray-500 hover:bg-white/5 hover:text-gray-300'
-                        }`}
-                    >
-                        {item.icon}
-                        <span className="font-normal">{item.label}</span>
-                    </button>
-                ))}
-            </nav>
+  return (
+    <div className="w-16 h-full bg-white border-r border-slate-200 flex flex-col items-center py-6 shrink-0 z-50 shadow-sm">
+      
+      {/* Logo ADM */}
+      <div className="w-10 h-10 bg-[#8b5cf6] text-white font-black text-[10px] flex items-center justify-center rounded-xl mb-8 shadow-md">
+        ADM
+      </div>
 
-            <button 
-                onClick={onLogout}
-                className="flex items-center gap-3 px-4 py-2 text-gray-600 hover:text-red-400 text-sm transition-all mt-auto"
-            >
-                <LogOut size={18} />
-                <span>wyloguj się</span>
-            </button>
-        </motion.div>
-    );
+      {/* Nawigacja - ikony */}
+      <nav className="flex-1 w-full flex flex-col items-center space-y-4">
+        {menu.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setActiveTab(item.id)} // To zmienia zakładkę w App.jsx
+            title={item.title}
+            className={`p-3 rounded-xl transition-all duration-200 ${
+              activeTab === item.id
+                ? 'bg-[#8b5cf6]/10 text-[#8b5cf6]'
+                : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+            }`}
+          >
+            {item.icon}
+          </button>
+        ))}
+      </nav>
+
+      {/* Dolna sekcja (Ustawienia/Wyloguj) */}
+      <div className="mt-auto pt-4 flex flex-col gap-2 border-t border-slate-100 w-full items-center">
+         <button className="p-3 text-slate-400 hover:bg-slate-100 rounded-xl transition-all">
+            <Settings size={20} />
+         </button>
+         <button onClick={handleLogout} className="p-3 text-slate-400 hover:bg-red-50 hover:text-red-500 rounded-xl transition-all">
+            <LogOut size={20} />
+         </button>
+      </div>
+    </div>
+  );
 };
 
 export default Sidebar;
