@@ -12,7 +12,6 @@ const SystemData = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
 
-    // Domyślne wiersze zgodne z Twoją strukturą bazy
     const initialConstraints = [
         { zone_name: 'Rozładunek', category: 'INBOUND', priority: 'P1', s1_min: 0, s1_max: 0, s2_min: 1, s2_max: 2, s3_min: 0, s3_max: 0 },
         { zone_name: 'Przyjęcie', category: 'INBOUND', priority: 'P3', s1_min: 0, s1_max: 0, s2_min: 0, s2_max: 0, s3_min: 0, s3_max: 0 },
@@ -27,20 +26,26 @@ const SystemData = () => {
 
     const [constraints, setConstraints] = useState(initialConstraints);
 
-    // --- 1. POBIERANIE KONFIGURACJI Z BAZY ---
+    // --- 1. POBIERANIE KONFIGURACJI Z BAZY (ZALEŻNE OD DATY!) ---
     const loadConstraints = async () => {
         try {
-            const res = await axios.get('/api/settings/constraints');
+            // Zmiana: Odpytujemy o konkretny dzień
+            const res = await axios.get(`/api/settings/constraints/${date}`);
+            
             if (res.data && res.data.length > 0) {
-                // Konwertujemy priorytety z liczb (np. 1) na format wizualny "P1"
+                // Konwertujemy priorytety z liczb na format wizualny "P1"
                 const mappedData = res.data.map(item => ({
                     ...item,
                     priority: String(item.priority).includes('P') ? item.priority : `P${item.priority}`
                 }));
                 setConstraints(mappedData);
+            } else {
+                // Zmiana: Jeśli w bazie na ten dzień nic nie ma, wracamy do czystego szablonu
+                setConstraints(initialConstraints);
             }
         } catch (e) {
             console.error("Błąd ładowania z DB, używam domyślnych.");
+            setConstraints(initialConstraints);
         }
     };
 
@@ -57,7 +62,8 @@ const SystemData = () => {
         }
     };
 
-    useEffect(() => { loadConstraints(); }, []);
+    // Zmiana: Nasłuchujemy zmiany daty, by odświeżyć tabelę z regułami
+    useEffect(() => { loadConstraints(); }, [date]);
     useEffect(() => { fetchWorkersCount(); }, [date, shift]);
 
     // --- 3. LOGIKA KALKULATORA ---
@@ -72,18 +78,24 @@ const SystemData = () => {
         ));
     };
 
-    // --- 4. ZAPIS DO BAZY (Z KONWERSJĄ TYPÓW) ---
+    // --- 4. ZAPIS DO BAZY (Z NOWYM PAYLOADEM PYDANTIC) ---
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            // Oczyszczamy dane przed wysyłką: "P1" -> 1 (Integer dla Postgresa)
+            // Oczyszczamy dane przed wysyłką: "P1" -> 1
             const dataToSave = constraints.map(c => ({
                 ...c,
                 priority: parseInt(String(c.priority).replace(/\D/g, '')) || 5
             }));
 
-            await axios.post('/api/settings/constraints', dataToSave);
-            alert("✅ Konfiguracja AI zapisana pomyślnie.");
+            // Zmiana: Pakujemy dane w strukturę obsługiwaną przez nasz nowy backend
+            const payload = {
+                target_date: date,
+                constraints: dataToSave
+            };
+
+            await axios.post('/api/settings/constraints', payload);
+            alert(`✅ Konfiguracja AI zapisana pomyślnie dla dnia: ${date}`);
             loadConstraints(); // Odświeżamy dane
         } catch (error) {
             console.error(error);
@@ -95,7 +107,7 @@ const SystemData = () => {
 
     const getPriorityBadge = (p) => {
         const pValue = String(p).includes('P') ? p : `P${p}`;
-        const styles = { P1: 'bg-red-500', P2: 'bg-orange-500', P3: 'bg-amber-400', P4: 'bg-slate-300' };
+        const styles = { P1: 'bg-red-500', P2: 'bg-orange-500', P3: 'bg-amber-400', P4: 'bg-slate-300', P5: 'bg-slate-400' };
         return <span className={`px-1.5 py-0.5 rounded text-[9px] font-black text-white ${styles[pValue] || 'bg-slate-200'}`}>{pValue}</span>;
     };
 
@@ -184,7 +196,7 @@ const SystemData = () => {
                                         <td className="px-4 py-2 text-center bg-slate-50/30">
                                             <input 
                                                 type="number" 
-                                                value={row[`s${shift}_min`] || 0} 
+                                                value={row[`s${shift}_min`] ?? 0} 
                                                 onChange={e => handleInputChange(row.zone_name, `s${shift}_min`, e.target.value)}
                                                 className="w-12 text-center font-black border border-slate-200 rounded py-0.5 outline-none focus:border-indigo-500"
                                             />
@@ -192,7 +204,7 @@ const SystemData = () => {
                                         <td className="px-4 py-2 text-center">
                                             <input 
                                                 type="number" 
-                                                value={row[`s${shift}_max`] || 0} 
+                                                value={row[`s${shift}_max`] ?? 0} 
                                                 onChange={e => handleInputChange(row.zone_name, `s${shift}_max`, e.target.value)}
                                                 className="w-12 text-center font-black border border-slate-200 rounded py-0.5 outline-none focus:border-indigo-500"
                                             />

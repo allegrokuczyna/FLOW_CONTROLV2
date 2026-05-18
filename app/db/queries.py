@@ -117,6 +117,17 @@ async def get_one_open_pieces(db: AsyncSession):
     result = await db.execute(s_single)
     return result.scalars().all()
 
+async def get_one_inprocess_pieces(db: AsyncSession):
+    """pobieranie jednosztuk w toku"""
+
+    target_single = ['adm-01_jedn']
+
+    s_single = (select(ActiveWork).where(func.lower(ActiveWork.workpoolid).in_(target_single),
+                                         ActiveWork == 'InProcess').order_by(ActiveWork.ordernum)
+    )
+    result = await db.execute(s_single)
+    return result.scalars().all()
+ 
 
     
     

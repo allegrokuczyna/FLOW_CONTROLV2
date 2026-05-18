@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Union
+from typing import Optional, Union, List
 from datetime import date
 
 class UserCreate(BaseModel):
@@ -35,7 +35,6 @@ class AiRequest(BaseModel):
 
 
 class ZoneConstraintUpdate(BaseModel):
-    id: str
     zone_name: str
     category: str
     priority: str
@@ -45,3 +44,7 @@ class ZoneConstraintUpdate(BaseModel):
     s2_max: int
     s3_min: int
     s3_max: int
+
+class DailyConstraintsSave(BaseModel):
+    target_date: date
+    constraints: List[ZoneConstraintUpdate]

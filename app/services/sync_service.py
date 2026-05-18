@@ -430,11 +430,11 @@ def get_shift_number(hours_str: str) -> str:
     h = str(hours_str).lower().replace(" ", "").replace(":", "").replace("–", "-").strip()
     
     # ZMIANA I (Rano)
-    if any(x in h for x in ["06-14", "6-14", "0614", "614", "07-15", "08-16", "05-13"]): 
+    if any(x in h for x in ["06-14", "6-14", "06-16" "0614", "614", "07-15", "08-16", "05-13"]): 
         return "1"
     
     # ZMIANA II (Popołudnie)
-    if any(x in h for x in ["14-22", "1422", "12-22", "12-20", "1220", "13-21"]): 
+    if any(x in h for x in ["14-22", "1422", "12-22", "12-20", "1220", "13-21", "16-24"]): 
         return "2"
     
     # ZMIANA III (Noc)
@@ -477,7 +477,7 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
 
         plan_data.append({
             "worker_login": worker_id,
-            "full_name": s.full_name,  # <--- TO BYŁ BRAKUJĄCY ELEMENT!
+            "full_name": s.full_name,  
             "shift": get_shift_number(hours),
             "hours": hours,
             "task": current_task,
