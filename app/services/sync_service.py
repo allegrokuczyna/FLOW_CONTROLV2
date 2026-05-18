@@ -3,7 +3,7 @@ import pandas as pd
 from io import StringIO
 from datetime import date, timedelta, datetime, time
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, insert, cast, Date, select
+from sqlalchemy import delete, insert, cast, Date, select, func
 from sqlalchemy.dialects.postgresql import insert  # Wyłącznie Postgres
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
@@ -73,10 +73,10 @@ async def get_data(endpoint_url: str):
 async def process_full_push_sync(payload: dict, db: AsyncSession):
     report = {}
     today = date.today()
-    # Pobieramy dane na 7 dni (zgodnie z wcześniejszym ustaleniem)
+    # Pobieramy dane na 7 dni
     target_dates = [today + timedelta(days=i) for i in range(7)]
 
-    # --- 2.1 MATRYCA SKILLI (bez zmian) ---
+    # --- 2.1 MATRYCA SKILLI ---
     try:
         raw_m = payload.get("matryca", [])
         if raw_m and len(raw_m) > 1:
@@ -94,7 +94,7 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
     except Exception as e:
         report["matrix"] = f"Error: {str(e)}"
 
-    # --- 2.2 GRAFIK PRACY (Z NOWYMI FILTRAMI: STATUS I PREFIX) ---
+    # --- 2.2 GRAFIK PRACY ---
     try:
         raw_g = payload.get("grafik", [])
         if raw_g and len(raw_g) > 1:
@@ -109,48 +109,60 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
             data = raw_g[header_idx + 1:]
             df_g = pd.DataFrame(data, columns=headers)
             
-            # --- FILTR 1: Status musi być dokładnie "pracuje" (ignoring case/spaces) ---
+            # --- FILTR 1: Status (tylko "pracuje") ---
             if 'Status' in df_g.columns:
                 df_g = df_g[df_g['Status'].astype(str).str.lower().str.strip() == 'pracuje']
             
-            # --- FILTR 2: Prefiks Grupy musi zawierać "O" (Operacja) ---
-            if 'Prefiks Grupy' in df_g.columns:
-                # Używamy startswith('O'), żeby łapać O, O-1, O-2, ale odsiać inne działy
-                df_g = df_g[df_g['Prefiks Grupy'].astype(str).str.upper().str.strip().str.startswith('O', na=False)]
+            # --- FILTR 2: Grupa (Tylko operacyjne) ---
+            if 'Grupa' in df_g.columns:
+                allowed_groups = ['operacja', 'operacja apt']
+                df_g = df_g[df_g['Grupa'].astype(str).str.lower().str.strip().isin(allowed_groups)]
             
             count_g = 0
+            
+            # Definiujemy standardowe formaty zmian, które bezwzględnie zapisujemy
+            valid_shifts = ['06-16', '12-22', '06-14', '6-14', '14-22', '22-6', '22-06', '16-24']
+            
+            # Definiujemy śmieci i nieobecności, które ignorujemy (w małych literach)
+            ignored_values = ['nan', '', 'null', '0', 'zw', 'nn', 'ub', 'uw']
+
             for _, row in df_g.iterrows():
                 login = str(row.get('Numer Pracownika', '')).strip()
                 full_name = str(row.get('Imię i Nazwisko', '')).strip()
                 prefix = str(row.get('Prefiks Grupy', '')).strip() 
                 
-                if not login or login == 'nan' or login == '': continue
+                if not login or login == 'nan' or login == '': 
+                    continue
                 
                 for col in df_g.columns:
                     work_date = flexible_date_parser(col)
                     if work_date in target_dates:
                         
-                        # Pobranie komórki (odporne na zduplikowane kolumny)
                         raw_val = row.get(col)
                         if hasattr(raw_val, 'iloc'):
                             raw_val = raw_val.iloc[0]
                             
                         shift_val = str(raw_val).strip()
                         
-                        if not shift_val or shift_val.lower() in ['nan', '', 'null', '0']:
+                        # Fix dla biblioteki Pandas ("1.0" -> "1")
+                        if shift_val.endswith('.0'):
+                            shift_val = shift_val[:-2]
+                        
+                        # Pomijamy puste dni oraz zdefiniowane wyżej nieobecności (zw, nn, ub)
+                        if not shift_val or shift_val.lower() in ignored_values:
                             continue
                             
-                        # --- GENIALNIE PROSTY FILTR: ODRZUCAMY GODZINY ---
-                        # Jeśli wartość w komórce da się zamienić na ułamek (np. "8", "8.0", "12"),
-                        # to znaczy, że to licznik godzin. Ignorujemy to!
-                        # Prawdziwa zmiana "6-14" lub "uz" wyrzuci tu błąd (ValueError) i przejdzie dalej.
-                        try:
-                            float(shift_val.replace(',', '.'))
-                            continue # To czysta liczba, pomijamy!
-                        except ValueError:
-                            pass # To tekst (np. "6-14", "uz"). Zapisujemy!
-                        # --------------------------------------------------
+                        # --- FILTR WARTOSCI ZMIAN ---
+                        if shift_val.lower() not in valid_shifts:
+                            try:
+                                # Sprawdzamy czy to czysta liczba (np. "8" godzin). Jeśli tak - odrzucamy.
+                                float(shift_val.replace(',', '.'))
+                                continue 
+                            except ValueError:
+                                # Inne teksty (np. "uw", "szkolenie") - przepuszczamy
+                                pass 
 
+                        # Zapis do bazy
                         stmt = insert(Schedule).values(
                             login=login,
                             full_name=full_name if full_name != 'nan' else None,
@@ -168,13 +180,14 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
                         await db.execute(stmt)
                         count_g += 1
 
-            report["schedule"] = f"Success ({count_g} shifts for filtered Operation workers)"
+            report["schedule"] = f"Success ({count_g} shifts for valid workers)"
+            print(f"✅ [SYNC] Pomyślnie zaktualizowano grafik na najbliższe 7 dni.")
         else:
             report["schedule"] = "No data in grafik"
     except Exception as e:
         report["schedule"] = f"Error: {str(e)}"
 
-    # --- 2.3 FORECAST (bez zmian, 7 dni) ---
+    # --- 2.3 FORECAST (bez zmian) ---
     try:
         raw_f = payload.get("forecast", [])
         if raw_f:
@@ -198,7 +211,7 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
     return report
 
 
-
+#odczyt z bazy
 async def get_weekly_schedule(db: AsyncSession):
     today = date.today()
     days = [today + timedelta(days=i) for i in range(7)]
@@ -430,11 +443,11 @@ def get_shift_number(hours_str: str) -> str:
     h = str(hours_str).lower().replace(" ", "").replace(":", "").replace("–", "-").strip()
     
     # ZMIANA I (Rano)
-    if any(x in h for x in ["06-14", "6-14", "06-16" "0614", "614", "07-15", "08-16", "05-13"]): 
+    if any(x in h for x in ["06-14", "6-14", "06-16" "0614", "614", "07-15", "08-16", "12-22"]): 
         return "1"
     
     # ZMIANA II (Popołudnie)
-    if any(x in h for x in ["14-22", "1422", "12-22", "12-20", "1220", "13-21", "16-24"]): 
+    if any(x in h for x in ["14-22", "1422", "12-20", "16-24"]): 
         return "2"
     
     # ZMIANA III (Noc)
@@ -581,7 +594,11 @@ async def get_all_constraints(db: AsyncSession):
 
 async def update_or_create_constraints(db: AsyncSession, constraints_data: list):
     try:
-        for item in constraints_data:
+        for raw_item in constraints_data:
+            # --- KLUCZOWA ZMIANA: Zamieniamy obiekt Pydantic na słownik ---
+            # (Obsługuje zarówno nowe FastAPI v2 jak i starsze v1)
+            item = raw_item.model_dump() if hasattr(raw_item, 'model_dump') else raw_item.dict()
+            
             # Pobieramy priorytet (np. "P1") i zamieniamy na samą liczbę (1)
             raw_prio = str(item.get('priority', 'P5'))
             # Wyciągamy tylko cyfry z tekstu
@@ -590,7 +607,7 @@ async def update_or_create_constraints(db: AsyncSession, constraints_data: list)
             vals = {
                 "zone_name": item.get('zone_name'),
                 "category": item.get('category', 'Outbound'),
-                "priority": prio_int, # <--- Teraz wysyłamy czysty INTEGER (np. 1)
+                "priority": prio_int, # <--- Zapisujemy czysty INTEGER (np. 1)
                 "s1_min": int(item.get('s1_min') or 0),
                 "s1_max": int(item.get('s1_max') or 0),
                 "s2_min": int(item.get('s2_min') or 0),

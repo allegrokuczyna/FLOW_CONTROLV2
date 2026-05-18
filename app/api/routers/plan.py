@@ -28,7 +28,7 @@ async def get_weekly_schedule_api(db: AsyncSession = Depends(get_db)):
     return await get_weekly_schedule(db)
 
 # ╔════════════════════════════════════════════════════════════════════════╗
-# ║ 👥 OBSADA PRACOWNICZA DLA ZMIANY (POZBYTO SIĘ DUPLIKATU!)              ║
+# ║ 👥 OBSADA PRACOWNICZA DLA ZMIANY             ║
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/plan/workers/{shift_id}")
 async def get_workers_for_shift(shift_id: str, target_date: date = None, db: AsyncSession = Depends(get_db)):
@@ -62,21 +62,26 @@ async def save_plan(
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/settings/constraints/{target_date}")
 async def read_constraints(target_date: str, db: AsyncSession = Depends(get_db)):
-    """Pobiera parametry MIN/MAX i Priorytety z Postgresa DLA KONKRETNEGO DNIA."""
+    """Pobiera parametry MIN/MAX. Ignoruje target_date dla bazy, bo limity są globalne."""
     try:
-        d = date.fromisoformat(target_date)
-        constraints = await get_all_constraints(db, d) 
+        
+        date.fromisoformat(target_date)
+        
+       
+        constraints = await get_all_constraints(db) 
         return constraints
     except ValueError:
         raise HTTPException(status_code=400, detail="Nieprawidłowy format daty. Użyj YYYY-MM-DD.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/settings/constraints") 
 async def save_constraints(payload: DailyConstraintsSave, db: AsyncSession = Depends(get_db)):
-    """Zapisuje konfigurację stref (Limity MIN/MAX) na dany dzień w modelu Upsert."""
+    """Zapisuje konfigurację stref. Ignoruje payload.target_date dla bazy."""
     try:
-        await update_or_create_constraints(db, payload.target_date, payload.constraints)
+    
+        await update_or_create_constraints(db, payload.constraints)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -78,17 +78,16 @@ const SystemData = () => {
         ));
     };
 
-    // --- 4. ZAPIS DO BAZY (Z NOWYM PAYLOADEM PYDANTIC) ---
+    // --- 4. ZAPIS DO BAZY ---
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            // Oczyszczamy dane przed wysyłką: "P1" -> 1
+            // Zmiana: Wysyłamy dane z priorytetem jako string "P1", "P2" (tak, jak oczekuje tego Pydantic)
             const dataToSave = constraints.map(c => ({
                 ...c,
-                priority: parseInt(String(c.priority).replace(/\D/g, '')) || 5
+                priority: String(c.priority).includes('P') ? String(c.priority) : `P${c.priority}`
             }));
 
-            // Zmiana: Pakujemy dane w strukturę obsługiwaną przez nasz nowy backend
             const payload = {
                 target_date: date,
                 constraints: dataToSave
