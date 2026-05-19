@@ -1,25 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Users, Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Star, Loader2, Award } from 'lucide-react';
+import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Award } from 'lucide-react';
 
 const ZONES = [
     { id: 'receiving', label: 'Receiving' },
     { id: 'putaway', label: 'Putaway' },
     { id: 'picking', label: 'Picking' },
     { id: 'packing', label: 'Packing' },
-    { id: 'sorting', label: 'Sorting' }
+    { id: 'sorting', label: 'Sorting' },
+    { id: 'shipping', label: 'Shipping' }
 ];
 
 const WorkPlan = () => {
-    // --- STANY ---
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-    const [shift, setShift] = useState('1'); // Domyślnie I zmiana
+    const [shift, setShift] = useState('1'); 
     const [isLoading, setIsLoading] = useState(false);
     const [isDraft, setIsDraft] = useState(false);
     
     const [pool, setPool] = useState([]);
     const [zones, setZones] = useState({
-        receiving: [], putaway: [], picking: [], packing: [], sorting: []
+        receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: []
     });
 
     // --- HELPER: NAJLEPSZY SKILL ---
@@ -29,7 +29,8 @@ const WorkPlan = () => {
             { id: 'putaway', label: 'Put', val: worker.putaway || 0 },
             { id: 'picking', label: 'Pick', val: worker.picking || 0 },
             { id: 'packing', label: 'Pack', val: worker.packing || 0 },
-            { id: 'sorting', label: 'Sort', val: worker.sorting || 0 }
+            { id: 'sorting', label: 'Sort', val: worker.sorting || 0 },
+            { id: 'shipping', label: 'Ship', val: worker.shipping || worker.załadunki || 0 }
         ];
         const best = skills.reduce((prev, current) => (prev.val > current.val) ? prev : current);
         return best.val > 0 ? best : { label: 'Newbie', val: 0 };
@@ -43,7 +44,7 @@ const WorkPlan = () => {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: [] };
             const newPool = [];
 
             if (allWorkers && Array.isArray(allWorkers)) {
@@ -72,7 +73,7 @@ const WorkPlan = () => {
         fetchData();
     }, [date, shift]);
 
-    // --- DRAG & DROP ---
+    // --- DRAG & DROP LOGIKA ---
     const handleDragStart = (e, workerId, sourceZone) => {
         e.dataTransfer.setData('workerId', workerId);
         e.dataTransfer.setData('sourceZone', sourceZone);
@@ -111,7 +112,7 @@ const WorkPlan = () => {
         setIsDraft(true);
     };
 
-    // --- AI SUGGESTION ---
+    // --- AI/OPTIMIZER SUGGESTION ---
     const handleAISuggestion = async () => {
         setIsLoading(true);
         try {
@@ -122,7 +123,7 @@ const WorkPlan = () => {
             const suggestions = response.data; 
 
             const allWorkers = [...pool, ...Object.values(zones).flat()];
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: [] };
             const newPool = [];
 
             allWorkers.forEach(w => {
@@ -168,9 +169,7 @@ const WorkPlan = () => {
             });
 
             await axios.post(`/api/plan/save?target_date=${date}`, assignments);
-            
             setIsDraft(false);
-            console.log("✅ Plan zapisany pomyślnie!");
             alert("Plan został pomyślnie zapisany!");
         } catch (error) {
             console.error("❌ Błąd zapisu:", error);
@@ -192,10 +191,7 @@ const WorkPlan = () => {
             >
                 <div className="flex justify-between items-start mb-2">
                     <div className="flex flex-col gap-1 w-full overflow-hidden">
-                        {/* LOGIN PRACOWNIKA */}
                         <span className="text-[10px] font-black text-slate-400 tracking-tight leading-none uppercase">{worker.worker_login}</span>
-                        
-                        {/* IMIĘ I NAZWISKO (DODANE) */}
                         <span className="text-[11px] font-black text-slate-800 leading-none uppercase truncate" title={worker.full_name}>
                             {worker.full_name || "Brak Danych"}
                         </span>
@@ -215,7 +211,7 @@ const WorkPlan = () => {
                 </div>
                 <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-50">
                     <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase">
-                        <Clock size={10} /> {worker.hours}
+                        <Clock size={10} /> {worker.hours || '8h'}
                     </div>
                 </div>
             </div>
@@ -255,7 +251,8 @@ const WorkPlan = () => {
 
             {/* MAIN WORKSPACE */}
             <div className="flex flex-1 overflow-hidden p-6 gap-6">
-                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-72 bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-[2.5rem] flex flex-col overflow-hidden shadow-inner">
+                {/* Pula nieprzypisanych */}
+                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-72 bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-[2.5rem] flex flex-col overflow-hidden shadow-inner shrink-0">
                     <div className="p-5 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
                         <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Unassigned Pool</span>
                         <span className="bg-white text-slate-900 text-[10px] font-black px-3 py-1 rounded-full border border-slate-200 shadow-sm">{pool.length}</span>
@@ -265,21 +262,23 @@ const WorkPlan = () => {
                     </div>
                 </div>
 
-                <div className="flex-1 grid grid-cols-5 gap-4 overflow-x-auto pb-4">
+                {/* Kolumny stref */}
+                <div className="flex-1 flex gap-4 overflow-x-auto pb-4 custom-scrollbar">
                     {ZONES.map(zone => (
-                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-[2rem] flex flex-col min-w-[220px] shadow-sm overflow-hidden hover:border-indigo-200 transition-all group">
+                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-[2rem] flex flex-col min-w-[220px] max-w-[260px] flex-1 shadow-sm overflow-hidden hover:border-indigo-200 transition-all group">
                             <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50 group-hover:bg-indigo-50/30 transition-colors">
                                 <h3 className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 uppercase tracking-widest transition-colors">{zone.label}</h3>
-                                <span className="text-[10px] font-black text-indigo-600 bg-white px-2 py-1 rounded-lg border border-indigo-100">{zones[zone.id].length}</span>
+                                <span className="text-[10px] font-black text-indigo-600 bg-white px-2 py-1 rounded-lg border border-indigo-100">{zones[zone.id]?.length || 0}</span>
                             </div>
                             <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
-                                {zones[zone.id].map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
+                                {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
                             </div>
                         </div>
                     ))}
                 </div>
             </div>
 
+            {/* LOADER OVERLAY */}
             {isLoading && (
                 <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-[2px] z-50 flex items-center justify-center">
                     <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center border border-slate-200 animate-in zoom-in duration-200">
