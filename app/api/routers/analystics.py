@@ -31,7 +31,7 @@ async def get_workpool_stats(db: AsyncSession = Depends(get_db), _user: User = D
 # ║ 📈 MATRYCA UMIEJĘTNOŚCI (SKILLE)                                       ║
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/productivity")
-async def get_worker_performance(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
+async def get_worker_performance(db: AsyncSession = Depends(get_db)): # Zniknęło `_user`
     """Zwraca matrycę skilli (produktywność) wszystkich pracowników z bazy."""
     result = await db.execute(select(WorkerPerformance))
     return result.scalars().all()

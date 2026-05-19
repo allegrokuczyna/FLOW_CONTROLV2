@@ -7,6 +7,7 @@ import WorkPlan from './components/WorkPlan';
 import SystemData from './components/SystemData';
 // DODANY IMPORT NOWEGO KOMPONENTU
 import ScheduleGrid from './components/ScheduleGrid';
+import ProductivityGrid from './components/ProductivityGrid';
 
 function App() {
   // Stan autoryzacji - sprawdza token w localStorage
@@ -30,6 +31,7 @@ function App() {
       case 'dane':      return 'AI Configuration | System Data';
       case 'live':      return 'Live Operations Status';
       case 'sync':      return 'D365 Data Synchronization';
+      case 'productivity': return 'Productivity Metrics'; // DODANY NAGŁÓWEK DLA WIDOKU PRODUCTIVITY
       default:          return 'Adamów Operational Node';
     }
   };
@@ -86,6 +88,13 @@ function App() {
           {activeTab === 'dane' && (
             <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
                <SystemData />
+            </div>
+          )}
+
+          {/* Widok: PRODUCTIVITY (TABELA METRYK PRODUCTIVITY) */}
+          {activeTab === 'productivity' && (
+            <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
+               <ProductivityGrid />
             </div>
           )}
 
