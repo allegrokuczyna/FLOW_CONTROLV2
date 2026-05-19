@@ -165,9 +165,10 @@ class ZoneConstraint(Base):
     __tablename__ = "zone_constraints"
 
     id = Column(Integer, primary_key=True, index=True)
-    zone_name = Column(String, unique=True, index=True)
+    zone_name = Column(String, index=True) # usuwam unique true
     category = Column(String)  # Inbound / Outbound
     priority = Column(Integer)
+    target_date = Column(Date, nullable=False, index=True)
     
     # Limity dla 3 zmian (Shift 1, 2, 3)
     s1_min = Column(Integer, nullable=True)
@@ -176,3 +177,7 @@ class ZoneConstraint(Base):
     s2_max = Column(Integer, nullable=True)
     s3_min = Column(Integer, nullable=True)
     s3_max = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('zone_name', 'target_date', name='uq_zone_date'),
+    )

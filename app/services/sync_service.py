@@ -586,28 +586,33 @@ def is_worker_on_shift(shift_str: str, current_time: time) -> bool:
 # 5. ZARZĄDZANIE KONSTRYKCJAMI AI (MIN/MAX/PRIO)
 # ==============================================================================
 
-async def get_all_constraints(db: AsyncSession):
-    """Pobiera wszystkie reguły stref posortowane po priorytecie (P1 -> P6)."""
-    stmt = select(ZoneConstraint).order_by(ZoneConstraint.priority.asc())
+async def get_all_constraints(db: AsyncSession, target_date: date):
+    """Pobiera wszystkie reguły stref posortowane po priorytecie (P1 -> P6) DLA DANEGO DNIA."""
+    stmt = select(ZoneConstraint).where(
+        ZoneConstraint.target_date == target_date
+    ).order_by(ZoneConstraint.priority.asc())
+    
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def update_or_create_constraints(db: AsyncSession, constraints_data: list):
+
+async def update_or_create_constraints(db: AsyncSession, target_date: str | date, constraints_data: list):
     try:
+        # Zamieniamy ew. stringa na obiekt daty, żeby w bazie zapisało się czysto
+        if isinstance(target_date, str):
+            target_date = date.fromisoformat(target_date)
+
         for raw_item in constraints_data:
-            # --- KLUCZOWA ZMIANA: Zamieniamy obiekt Pydantic na słownik ---
-            # (Obsługuje zarówno nowe FastAPI v2 jak i starsze v1)
             item = raw_item.model_dump() if hasattr(raw_item, 'model_dump') else raw_item.dict()
             
-            # Pobieramy priorytet (np. "P1") i zamieniamy na samą liczbę (1)
             raw_prio = str(item.get('priority', 'P5'))
-            # Wyciągamy tylko cyfry z tekstu
             prio_int = int(''.join(filter(str.isdigit, raw_prio)) or 5)
 
             vals = {
+                "target_date": target_date, # <--- WSTAWIANIE DATY
                 "zone_name": item.get('zone_name'),
                 "category": item.get('category', 'Outbound'),
-                "priority": prio_int, # <--- Zapisujemy czysty INTEGER (np. 1)
+                "priority": prio_int,
                 "s1_min": int(item.get('s1_min') or 0),
                 "s1_max": int(item.get('s1_max') or 0),
                 "s2_min": int(item.get('s2_min') or 0),
@@ -619,9 +624,10 @@ async def update_or_create_constraints(db: AsyncSession, constraints_data: list)
             if not vals["zone_name"]:
                 continue
 
+            # UPSERT na podstawie pary: zone_name + target_date
             stmt = insert(ZoneConstraint).values(**vals).on_conflict_do_update(
-                index_elements=['zone_name'],
-                set_={k: v for k, v in vals.items() if k != 'zone_name'}
+                index_elements=['zone_name', 'target_date'], # <--- NOWY KLUCZ UPSERT!
+                set_={k: v for k, v in vals.items() if k not in ['zone_name', 'target_date']}
             )
             await db.execute(stmt)
         

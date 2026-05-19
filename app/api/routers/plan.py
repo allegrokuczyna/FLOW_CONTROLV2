@@ -62,26 +62,21 @@ async def save_plan(
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/settings/constraints/{target_date}")
 async def read_constraints(target_date: str, db: AsyncSession = Depends(get_db)):
-    """Pobiera parametry MIN/MAX. Ignoruje target_date dla bazy, bo limity są globalne."""
+    """Pobiera parametry MIN/MAX z Postgresa DLA KONKRETNEGO DNIA."""
     try:
-        
-        date.fromisoformat(target_date)
-        
-       
-        constraints = await get_all_constraints(db) 
+        d = date.fromisoformat(target_date)
+        constraints = await get_all_constraints(db, d) 
         return constraints
     except ValueError:
         raise HTTPException(status_code=400, detail="Nieprawidłowy format daty. Użyj YYYY-MM-DD.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/settings/constraints") 
 async def save_constraints(payload: DailyConstraintsSave, db: AsyncSession = Depends(get_db)):
-    """Zapisuje konfigurację stref. Ignoruje payload.target_date dla bazy."""
+    """Zapisuje konfigurację stref na dany dzień."""
     try:
-    
-        await update_or_create_constraints(db, payload.constraints)
+        await update_or_create_constraints(db, payload.target_date, payload.constraints)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

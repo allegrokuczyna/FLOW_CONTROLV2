@@ -45,6 +45,9 @@ class ZoneConstraintUpdate(BaseModel):
     s3_min: int
     s3_max: int
 
+    class Config:
+        from_attributes = True
+
 class DailyConstraintsSave(BaseModel):
     target_date: date
     constraints: List[ZoneConstraintUpdate]
