@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from datetime import date
+from sqlalchemy import func, select
 
 from app.db.database import get_db
 from app.db.models import User
@@ -9,7 +10,7 @@ from app.db.schemas import AssignmentSchema, DailyConstraintsSave
 from app.api.deps import get_current_user
 from app.services.sync_service import (
     get_daily_plan, save_daily_plan, get_weekly_schedule, 
-    get_all_constraints, update_or_create_constraints
+    get_all_constraints, update_or_create_constraints, ForecastIntake
 )
 
 router = APIRouter(tags=["Planowanie i Konfiguracja (Constraints)"])
@@ -80,3 +81,5 @@ async def save_constraints(payload: DailyConstraintsSave, db: AsyncSession = Dep
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+

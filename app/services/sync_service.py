@@ -187,24 +187,68 @@ async def process_full_push_sync(payload: dict, db: AsyncSession):
     except Exception as e:
         report["schedule"] = f"Error: {str(e)}"
 
-    # --- 2.3 FORECAST (bez zmian) ---
+    # --- 2.3 FORECAST (ZAKTUALIZOWANY O PODZIAŁ 1F/1P ORAZ LOGI) ---
     try:
         raw_f = payload.get("forecast", [])
         if raw_f:
+            # Czyścimy stare wpisy na te 7 dni przed wrzuceniem świeżych danych
             await db.execute(delete(ForecastIntake).where(ForecastIntake.forecast_date.in_(target_dates)))
             new_forecasts = []
+            
+            # Liczniki statystyczne do logów
+            count_1f = 0
+            count_1p = 0
+            
+            print(f"👀 [DEBUG FORECAST] Paczka dotarła! Łączna liczba odebranych rekordów: {len(raw_f)}")
+            if len(raw_f) > 0:
+                print(f"👀 [DEBUG FORECAST] Pierwszy rekord w paczce: {raw_f[0]}")
+                print(f"👀 [DEBUG FORECAST] Ostatni rekord w paczce: {raw_f[-1]}")
+                print(f"👀 [DEBUG FORECAST] Dozwolone okno dat: {target_dates[0]} do {target_dates[-1]}")
+            
             for item in raw_f:
-                dt_obj = datetime.fromisoformat(item['dt'].replace('Z', '+00:00'))
-                if dt_obj.date() in target_dates:
-                    new_forecasts.append(ForecastIntake(
-                        forecast_date=dt_obj.date(),      
-                        hour_from=dt_obj,                 
-                        forecast_pcs=int(item['pcs'])     
-                    ))
+                try:
+                    # Bezpieczny parser daty i czasu
+                    clean_dt_str = item['dt'].replace('Z', '').split('.')[0]
+                    dt_obj = datetime.fromisoformat(clean_dt_str) 
+                    
+                    # Wyciągamy typ (1F / 1P) – jeśli z jakiegoś powodu będzie brakować, domyślnie dajemy '1F'
+                    c_type = item.get('type', '1F')
+                    
+                    # Sprawdzamy, czy rekord mieści się w naszym oknie 7 dni
+                    if dt_obj.date() in target_dates:
+                        new_forecasts.append(ForecastIntake(
+                            forecast_date=dt_obj.date(),      
+                            hour_from=dt_obj,                 
+                            forecast_pcs=int(item.get('pcs', 0)),
+                            client_type=c_type
+                        ))
+                        
+                        # Zliczamy typy dla ładnego logu końcowego
+                        if c_type == "1F":
+                            count_1f += 1
+                        elif c_type == "1P":
+                            count_1p += 1
+                            
+                except Exception as row_error:
+                    print(f"👀 [DEBUG FORECAST] Pomięto uszkodzony wiersz {item}. Powód: {row_error}")
+                    continue
+
+            print(f"👀 [DEBUG FORECAST] Analiza okna zakończona sukcesem.")
+            print(f"👀 [DEBUG FORECAST] Statystyki dopasowanych wierszy -> Łącznie: {len(new_forecasts)} | Typ 1F: {count_1f} | Typ 1P: {count_1p}")
+
             if new_forecasts:
                 db.add_all(new_forecasts)
-            report["forecast"] = f"Success ({len(new_forecasts)} lines)"
+                print(f"✅ [DEBUG FORECAST] Wszystkie {len(new_forecasts)} rekordów pomyślnie przekazane do bazy danych.")
+            else:
+                print(f"⚠️ [DEBUG FORECAST] Żaden z przesłanych rekordów nie pasował do okna {target_dates[0]} - {target_dates[-1]}")
+            
+            report["forecast"] = f"Success ({len(new_forecasts)} lines - 1F: {count_1f}, 1P: {count_1p})"
+        else:
+            print("⚠️ [DEBUG FORECAST] Sekcja 'forecast' w payloadzie jest całkowicie pusta!")
+            report["forecast"] = "No data in forecast payload"
+            
     except Exception as e:
+        print(f"❌ [DEBUG FORECAST] KRYTYCZNY błąd przetwarzania sekcji Forecast: {str(e)}")
         report["forecast"] = f"Error: {str(e)}"
 
     await db.commit()
@@ -637,3 +681,8 @@ async def update_or_create_constraints(db: AsyncSession, target_date: str | date
         await db.rollback()
         print(f"❌ BŁĄD ZAPISU DO DB: {str(e)}")
         raise e
+    
+
+
+
+

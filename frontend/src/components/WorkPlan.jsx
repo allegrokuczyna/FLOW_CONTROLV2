@@ -13,7 +13,7 @@ const ZONES = [
 const WorkPlan = () => {
     // --- STANY ---
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-    const [shift, setShift] = useState('2'); // Domyślnie II zmiana
+    const [shift, setShift] = useState('1'); // Domyślnie I zmiana
     const [isLoading, setIsLoading] = useState(false);
     const [isDraft, setIsDraft] = useState(false);
     

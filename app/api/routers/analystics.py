@@ -7,12 +7,12 @@ from app.db.database import get_db
 from app.db.models import User, WorkerPerformance
 from app.api.deps import get_current_user
 from app.services.sync_service import get_workpool_analytics
-from app.db.queries import get_upcoming_forecast
+from app.db.queries import get_upcoming_forecast, calculate_hourly_forecast_report
 
 router = APIRouter(tags=["Analityka, Prognozy i KPI"])
 
 # ╔════════════════════════════════════════════════════════════════════════╗
-# ║ 📊 STATYSTYKI STREF (WORKPOOLS)                                        ║
+# ║ 📊 STATYSTYKI STREF (WORKPOOLS)                                         ║
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/analytics/workpools")
 async def get_workpool_stats(db: AsyncSession = Depends(get_db), _user: User = Depends(get_current_user)):
@@ -44,3 +44,15 @@ async def get_upcoming_intake(db: AsyncSession = Depends(get_db)):
     """Zwraca prognozowany spływ jednostek na najbliższe 2h z modelu Forecast."""
     data = await get_upcoming_forecast(db)
     return {"status": "success", "count": len(data), "data": data}
+
+# ╔════════════════════════════════════════════════════════════════════════╗
+# ║ 📊 FORECAST GODZINOWY DLA DASHBOARDU (ZAKTUALIZOWANA ŚCIEŻKA)          ║
+# ╚════════════════════════════════════════════════════════════════════════╝
+@router.get("/analytics/forecast/hourly")  # <--- POPRAWIONO: Dodano /analytics/
+async def get_hourly_forecast(target_date: str, db: AsyncSession = Depends(get_db)):
+    """Wystawia przetworzone dane analityczne dla Dashboardu."""
+    try:
+        return await calculate_hourly_forecast_report(db, target_date)
+    except Exception as e:
+        print(f"❌ [BŁĄD API W ENDPOINTS] {str(e)}")
+        return []

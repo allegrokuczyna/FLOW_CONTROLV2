@@ -150,13 +150,10 @@ class ForecastIntake(Base):
     __tablename__ = "forecast_intake"
 
     id = Column(Integer, primary_key=True, index=True)
-    forecast_date = Column(Date, index=True)      
-    hour_from = Column(DateTime(timezone=True), index=True) # Tu będzie np. 2026-05-13 08:00:00
+    forecast_date = Column(Date, index=True)
+    hour_from = Column(DateTime)
     forecast_pcs = Column(Integer)
-    actual_pcs = Column(Integer, nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (UniqueConstraint('forecast_date', 'hour_from', name='uix_forecast_date_hour'),)
+    client_type = Column(String, index=True, default="1F")
 
 
 #plan pracy magazynu

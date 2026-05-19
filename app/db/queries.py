@@ -51,87 +51,7 @@ async def get_replenishment_open_works(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def get_all_mezz_open_works(db: AsyncSession):
-    """Pobieranie otwartych prac kompletacji ze stref mezaniny (Zone picking)."""
-    # Lista czystych nazw
-    target_mez = ['jedn zp', 'wiel zp']
-
-    stmt = (
-        select(ActiveWork)
-        .where(
-            func.lower(ActiveWork.workpoolid).in_(target_mez),
-            ActiveWork.workstatus == 'Open'
-        )
-        .order_by(ActiveWork.workid)
-    )
-    
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-
-#Pobieranie otwartych prac przyjécia mezanina
-async def get_inbound_works_mezz(db: AsyncSession):
-    """Pobierania prac przyjecia towary"""
-    target_inound = ['przyjęcie mezanina']
-
-    s_inb = (
-        select(ActiveWork)
-        .where
-        (func.lower(ActiveWork.workpoolid).in_(target_inound),
-            ActiveWork.workstatus == 'Open'
-        )
-        .order_by(ActiveWork.ordernum)
-    )
-
-    result = await db.execute(s_inb)
-    return result.scalars().all()
-
-
-async def get_multi_orders(db: AsyncSession):
-    """pobieranie wszystkich otwartych zamówien wielosztukowych"""
-
-    target_multi = ['adm-01_wiel']
-
-    s_multi =(
-        select(ActiveWork)
-        .where(func.lower(ActiveWork.workpoolid).in_(target_multi),
-               ActiveWork.workstatus == 'Open').order_by(ActiveWork.ordernum)
-    )
-
-    result = await db.execute(s_multi)
-    return result.scalars().all()
-
-
-async def get_one_open_pieces(db: AsyncSession):
-    """pobieranie jednosztukowych zamówien"""
-
-    target_single = ['adm-01_jedn']
-
-    s_single = (
-        select(ActiveWork)
-        .where(func.lower(ActiveWork.workpoolid).in_(target_single),
-               ActiveWork.workstatus == 'Open').order_by(ActiveWork.ordernum)
-    )
-
-    result = await db.execute(s_single)
-    return result.scalars().all()
-
-async def get_one_inprocess_pieces(db: AsyncSession):
-    """pobieranie jednosztuk w toku"""
-
-    target_single = ['adm-01_jedn']
-
-    s_single = (select(ActiveWork).where(func.lower(ActiveWork.workpoolid).in_(target_single),
-                                         ActiveWork == 'InProcess').order_by(ActiveWork.ordernum)
-    )
-    result = await db.execute(s_single)
-    return result.scalars().all()
  
-
-    
-    
-
 # ==============================================================================
 # SEKCJA: PROGNOZY I PLANOWANIE (FORECAST)
 # ==============================================================================
@@ -158,3 +78,44 @@ async def get_upcoming_forecast(db: AsyncSession):
         "hour_from": f.hour_from.isoformat(),
         "forecast_pcs": f.forecast_pcs
     } for f in forecasts]
+
+
+
+
+async def get_raw_hourly_forecast(db: AsyncSession, target_date: date):
+    """Wyciąga z bazy sumy sztuk pogrupowane po godzinie i typie klienta."""
+    hour_expr = func.to_char(ForecastIntake.hour_from, 'HH24:00')
+    
+    stmt = (
+        select(
+            hour_expr.label('hour'),
+            ForecastIntake.client_type,
+            func.sum(ForecastIntake.forecast_pcs).label('total_pcs')
+        )
+        .where(ForecastIntake.forecast_date == target_date)
+        .group_by(hour_expr, ForecastIntake.client_type)
+        .order_by(hour_expr)
+    )
+    
+    result = await db.execute(stmt)
+    return result.all()
+
+
+
+async def calculate_hourly_forecast_report(db: AsyncSession, target_date_str: str) -> list:
+    """Konwertuje surowe dane z bazy na format czytelny dla frontendu."""
+    d = date.fromisoformat(target_date_str)
+    
+    # Wywołanie zapytania z warstwy queries
+    raw_rows = await get_raw_hourly_forecast(db, d)
+    
+    hourly_map = {}
+    for hour, c_type, pcs in raw_rows:
+        if hour not in hourly_map:
+            hourly_map[hour] = {"hour": hour, "yf": 0, "yp": 0}
+        if c_type == "1F":
+            hourly_map[hour]["yf"] = int(pcs or 0)
+        elif c_type == "1P":
+            hourly_map[hour]["yp"] = int(pcs or 0)
+            
+    return sorted(list(hourly_map.values()), key=lambda x: x['hour'])

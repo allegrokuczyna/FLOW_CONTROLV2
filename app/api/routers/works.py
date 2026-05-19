@@ -7,9 +7,7 @@ from app.db.database import get_db
 from app.db.models import ActiveWork, User
 from app.api.deps import get_current_user
 from app.db.queries import (
-    get_replenishment_open_works, get_all_mezz_open_works, 
-    get_inbound_works_mezz, get_multi_orders, 
-    get_one_open_pieces, get_one_inprocess_pieces
+    get_replenishment_open_works
 )
 
 # PREFIX: Automatycznie dodaje /works przed każdym endpointem
