@@ -11,46 +11,26 @@ from datetime import datetime, date
 MODEL_JSON = "qwen2:0.5b"  # Szybki model do struktury JSON
 MODEL_TEXT = "phi3"        # Model do generowania raportów (inteligentniejszy)
 THREADS = 4                # Limit obciążenia procesora
-
+CHUNK_SIZE = 10
 
 # ==============================================================================
 # 1. GENEROWANIE PRZYDZIAŁÓW (ALGORYTM Z KLASTERINGIEM PROCESÓW I BLOKADAMI)
 # ==============================================================================
+
+
 async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target_date: date = None):
     now = datetime.now()
+    
     if target_date is None:
         target_date = now.date()
         
-    # --- BEZPIECZNIK: Lista zablokowanych loginów ---
-
-    NOT_ALLOWED_LOGINS = []
-        
-    SKILL_TO_ZONE = {
-        "receiving": "Rozładunek",
-        "putaway": "Putaway",
-        "picking": "Pick",
-        "packing": "Pack",
-        "sorting": "Sort",
-        "forklift": "Rozładunek",
-        "załadunki": "Załadunki",
-        "shipping": "Załadunki"
-    }
-        
-    # 1. Pobieramy limity i priorytety stref z bazy
+    # 1. Pobieranie danych
     constraint_stmt = select(ZoneConstraint).order_by(ZoneConstraint.priority.asc())
     constraints_res = await db.execute(constraint_stmt)
     constraints = constraints_res.scalars().all()
     
-    zones_status = {}
-    for c in constraints:
-        zones_status[c.zone_name] = {
-            "priority": c.priority,
-            "min": getattr(c, f"s{shift_id}_min", 0),
-            "max": getattr(c, f"s{shift_id}_max", 0),
-            "current_assigned": 0
-        }
+    zones_config = [{"zone": c.zone_name} for c in constraints]
 
-    # 2. Pobieramy pracowników
     stmt = select(Schedule.login, Schedule.planned_shift, WorkerPerformance).outerjoin(
         WorkerPerformance, Schedule.login == WorkerPerformance.login
     ).where(Schedule.work_date == target_date)
@@ -58,115 +38,277 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
     result = await db.execute(stmt)
     rows = result.all()
 
-    workers = []
+    team_data = []
+    print(f"--- 🤖 AI ENGINE START (Shift ID: {shift_id}, Date: {target_date}) ---")
+    
     IGNORED_KEYS = ['id', 'login', 'worker_login', 'full_name', 'worker_name', 'updated_at', 'created_at', 'timestamp', 'date']
 
     for login, shift_name, perf in rows:
-        # --- WERYFIKACJA BEZPIECZNIKA ---
-        if str(login) in NOT_ALLOWED_LOGINS:
-            continue # Pomijamy pracownika, algorytm go nie zobaczy!
-            
-        if get_shift_number(str(shift_name).strip()) == str(shift_id):
-            skills = {}
+        db_shift_str = str(shift_name).strip()
+        if get_shift_number(db_shift_str) == str(shift_id):
+            worker_skills = {}
             if perf:
                 for col in perf.__table__.columns.keys():
                     if col.lower() not in IGNORED_KEYS:
                         val = getattr(perf, col, 0)
                         if isinstance(val, int) and val > 0:
-                            zone_name = SKILL_TO_ZONE.get(col.lower(), col)
-                            skills[zone_name] = val
+                            worker_skills[col] = val
             
-            workers.append({"id": str(login), "raw_skills": skills})
+            team_data.append({"id": str(login), "skills": worker_skills})
 
-    print(f"--- 🚀 CLUSTERED OPTIMIZER START (Shift: {shift_id}, Workers: {len(workers)}) ---")
+    print(f"--- 🔍 AI DEBUG: Znaleziono: {len(team_data)} osób. Dzielenie na paczki po {CHUNK_SIZE}... ---")
 
-    final_assignments = {}
-    unassigned_workers = workers.copy()
+    if not team_data:
+        return {}
 
-    # --- DEFINICJA KLASTRÓW OPERACYJNYCH ---
-    ZONE_ALLOWED_SKILLS = {
-        "Rozładunek": ["Rozładunek", "Putaway"], 
-        "Przyjęcie": ["Rozładunek", "Putaway"],  
-        "Putaway": ["Rozładunek", "Putaway"],    
-        
-        "Pick": ["Pick", "Pack"],                
-        "Pack": ["Pick", "Pack"],                
-        
-        "Sort": ["Sort"],                        
-        "Załadunki": ["Załadunki"]               
-    }
+    # 2. Przygotowanie danych dla AI
+    simplified_workers = {}
+    for w in team_data:
+        if not w["skills"]:
+            simplified_workers[w["id"]] = ["picking"]
+        else:
+            sorted_skills = sorted(w["skills"].items(), key=lambda x: x[1], reverse=True)
+            simplified_workers[w["id"]] = [skill_name for skill_name, val in sorted_skills]
 
-    # --- KROK 1: ZASPOKOJENIE MINIMÓW (Z UWZGLĘDNIENIEM KLASTRÓW) ---
-    for zone_name, status in sorted(zones_status.items(), key=lambda x: x[1]["priority"]):
-        allowed_skills_for_this_zone = ZONE_ALLOWED_SKILLS.get(zone_name, [zone_name])
-        
-        while status["current_assigned"] < status["min"]:
-            best_worker = None
-            best_skill_lvl = 0
-            
-            for w in unassigned_workers:
-                matching_skills = [w["raw_skills"].get(s, 0) for s in allowed_skills_for_this_zone]
-                skill_lvl = max(matching_skills) if matching_skills else 0
-                
-                if skill_lvl > best_skill_lvl:
-                    best_skill_lvl = skill_lvl
-                    best_worker = w
-            
-            if best_worker:
-                final_assignments[best_worker["id"]] = zone_name
-                status["current_assigned"] += 1
-                unassigned_workers.remove(best_worker)
-            else:
-                if status["min"] > 0 and status["current_assigned"] < status["min"]:
-                    print(f"⚠️ MANKAMENT: Nie można spełnić MIN dla strefy {zone_name}. Brak wolnych ludzi w dedykowanym klastrze!")
-                break
-
-    # --- KROK 2: ROZDZIELENIE RESZTY W RAMACH ICH NAJLEPSZYCH KLASTRÓW ---
-    for w in list(unassigned_workers):
-        sorted_skills = sorted(w["raw_skills"].items(), key=lambda x: x[1], reverse=True)
-        assigned = False
-        
-        for preferred_zone, skill_lvl in sorted_skills:
-            if preferred_zone in zones_status:
-                status = zones_status[preferred_zone]
-                allowed_skills = ZONE_ALLOWED_SKILLS.get(preferred_zone, [preferred_zone])
-                has_valid_cluster_skill = any(w["raw_skills"].get(s, 0) > 0 for s in allowed_skills)
-                
-                if has_valid_cluster_skill and status["current_assigned"] < status["max"]:
-                    final_assignments[w["id"]] = preferred_zone
-                    status["current_assigned"] += 1
-                    unassigned_workers.remove(w)
-                    assigned = True
-                    break
-        
-        # --- KROK 3: REZERWOWY FALLBACK ---
-        if not assigned:
-            final_assignments[w["id"]] = "Pick"
-            if "Pick" in zones_status:
-                zones_status["Pick"]["current_assigned"] += 1
-
-    print(f"✅ OPTIMIZER: Przydzielono {len(final_assignments)} osób.")
-    for z, s in zones_status.items():
-        print(f"📊 {z}: {s['current_assigned']} osób (Min: {s['min']}, Max: {s['max']})")
-
-    # --- KROK 4: SŁOWNIK TŁUMACZĄCY NA IDENTYFIKATORY DLA REACTA ---
+    valid_zones = [z["zone"] for z in zones_config]
+    
+    # 3. Definicja Słownika dla Reacta
     ZONE_TO_REACT_ID = {
         "Rozładunek": "receiving",
         "Przyjęcie": "receiving",
-        "Załadunki": "shipping",
         "Putaway": "putaway",
         "Pick": "picking",
         "Pack": "packing",
-        "Sort": "sorting"
+        "Sort": "sorting",
+        "picking": "picking",
+        "packing": "packing"
     }
 
-    react_assignments = {}
-    for worker_id, db_zone_name in final_assignments.items():
-        react_id = ZONE_TO_REACT_ID.get(db_zone_name)
-        if react_id:
-            react_assignments[worker_id] = react_id
+    # Zmienna na wynik końcowy
+    all_react_assignments = {}
+    
+    # Zamieniamy słownik na listę, żeby łatwo go dzielić na paczki
+    worker_items = list(simplified_workers.items())
+
+    # --- PĘTLA CHUNKOWANIA (MAP-REDUCE) ---
+    for i in range(0, len(worker_items), CHUNK_SIZE):
+        chunk = dict(worker_items[i:i + CHUNK_SIZE])
+        
+        print(f"📦 Wysyłam paczkę do AI ({i + 1} - {min(i + CHUNK_SIZE, len(worker_items))} z {len(worker_items)})...")
+        
+        prompt = (
+            f"Assign EXACTLY ONE zone to each worker.\n"
+            f"WORKERS (First item is best skill): {json.dumps(chunk)}\n"
+            f"ALLOWED ZONES: {json.dumps(valid_zones)}\n\n"
+            f"TASK: Return a flat JSON dictionary. Key = worker ID, Value = assigned zone.\n"
+            f"EXAMPLE OUTPUT:\n{{\"3002448\": \"Pick\", \"9001504\": \"Pack\"}}"
+        )
+
+        try:
+            response = ollama.chat(
+                model=MODEL_JSON,
+                messages=[
+                    {'role': 'system', 'content': 'Output ONLY a flat JSON dictionary mapping string IDs to string zone names.'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                format='json',
+                options={"temperature": 0.0, "num_thread": THREADS}
+            )
             
-    return react_assignments
+            raw_content = response['message']['content']
+            
+            # Odkodowanie JSON-a z zabezpieczeniem (wyciągarka Regex)
+            ai_raw_dict = {}
+            try:
+                ai_raw_dict = json.loads(raw_content)
+            except json.JSONDecodeError:
+                matches = re.findall(r'"(\d+)":\s*"([^"]+)"', raw_content)
+                ai_raw_dict = {k: v for k, v in matches}
+                print("   ⚠️ Użyto Regexa do wyciągnięcia danych (ucięty JSON).")
+
+            # --- PARSOWANIE I CZYSZCZENIE BŁĘDÓW AI ---
+            for w_id, suggested_zone in ai_raw_dict.items():
+                
+                # --- PANCERNE ZABEZPIECZENIE TYPÓW DANYCH ---
+                # Jeśli AI zwróci listę np. ["Pick", "Pack"], bierzemy pierwszy element "Pick"
+                if isinstance(suggested_zone, list):
+                    if len(suggested_zone) > 0:
+                        suggested_zone = str(suggested_zone[0])
+                    else:
+                        continue # Pusta lista, ignorujemy
+                elif not isinstance(suggested_zone, str):
+                    suggested_zone = str(suggested_zone)
+
+                # Próba dopasowania do zdefiniowanych stref w React
+                matched_react_id = None
+                for db_zone, react_id in ZONE_TO_REACT_ID.items():
+                    if db_zone.lower() == suggested_zone.lower():
+                        matched_react_id = react_id
+                        break
+                
+                # Jeśli się udało, zapisujemy wynik
+                if matched_react_id:
+                    all_react_assignments[w_id] = matched_react_id
+
+        except Exception as e:
+            print(f"❌ BŁĄD dla paczki: {e}")
+            continue # Przechodzi do kolejnej dziesiątki nawet jeśli poprzednia padnie
+
+    print(f"✅ AI (Ollama): Zakończono! Uratowano i przypisano {len(all_react_assignments)} z {len(worker_items)} pracowników.")
+    return all_react_assignments
+    
+
+# async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target_date: date = None):
+#     now = datetime.now()
+#     if target_date is None:
+#         target_date = now.date()
+        
+#     # --- BEZPIECZNIK: Lista zablokowanych loginów ---
+
+#     NOT_ALLOWED_LOGINS = []
+        
+#     SKILL_TO_ZONE = {
+#         "receiving": "Rozładunek",
+#         "putaway": "Putaway",
+#         "picking": "Pick",
+#         "packing": "Pack",
+#         "sorting": "Sort",
+#         "forklift": "Rozładunek",
+#         "załadunki": "Załadunki",
+#         "shipping": "Załadunki"
+#     }
+        
+#     # 1. Pobieramy limity i priorytety stref z bazy
+#     constraint_stmt = select(ZoneConstraint).order_by(ZoneConstraint.priority.asc())
+#     constraints_res = await db.execute(constraint_stmt)
+#     constraints = constraints_res.scalars().all()
+    
+#     zones_status = {}
+#     for c in constraints:
+#         zones_status[c.zone_name] = {
+#             "priority": c.priority,
+#             "min": getattr(c, f"s{shift_id}_min", 0),
+#             "max": getattr(c, f"s{shift_id}_max", 0),
+#             "current_assigned": 0
+#         }
+
+#     # 2. Pobieramy pracowników
+#     stmt = select(Schedule.login, Schedule.planned_shift, WorkerPerformance).outerjoin(
+#         WorkerPerformance, Schedule.login == WorkerPerformance.login
+#     ).where(Schedule.work_date == target_date)
+    
+#     result = await db.execute(stmt)
+#     rows = result.all()
+
+#     workers = []
+#     IGNORED_KEYS = ['id', 'login', 'worker_login', 'full_name', 'worker_name', 'updated_at', 'created_at', 'timestamp', 'date']
+
+#     for login, shift_name, perf in rows:
+#         # --- WERYFIKACJA BEZPIECZNIKA ---
+#         if str(login) in NOT_ALLOWED_LOGINS:
+#             continue 
+            
+#         if get_shift_number(str(shift_name).strip()) == str(shift_id):
+#             skills = {}
+#             if perf:
+#                 for col in perf.__table__.columns.keys():
+#                     if col.lower() not in IGNORED_KEYS:
+#                         val = getattr(perf, col, 0)
+#                         if isinstance(val, int) and val > 0:
+#                             zone_name = SKILL_TO_ZONE.get(col.lower(), col)
+#                             skills[zone_name] = val
+            
+#             workers.append({"id": str(login), "raw_skills": skills})
+
+#     print(f"--- 🚀 CLUSTERED OPTIMIZER START (Shift: {shift_id}, Workers: {len(workers)}) ---")
+
+#     final_assignments = {}
+#     unassigned_workers = workers.copy()
+
+#     # --- DEFINICJA KLASTRÓW OPERACYJNYCH ---
+#     ZONE_ALLOWED_SKILLS = {
+#         "Rozładunek": ["Rozładunek", "Putaway"], 
+#         "Przyjęcie": ["Rozładunek", "Putaway"],  
+#         "Putaway": ["Rozładunek", "Putaway"],    
+        
+#         "Pick": ["Pick", "Pack"],                
+#         "Pack": ["Pick", "Pack"],                
+        
+#         "Sort": ["Sort"],                        
+#         "Załadunki": ["Załadunki"]               
+#     }
+
+#     # --- KROK 1: ZASPOKOJENIE MINIMÓW (Z UWZGLĘDNIENIEM KLASTRÓW) ---
+#     for zone_name, status in sorted(zones_status.items(), key=lambda x: x[1]["priority"]):
+#         allowed_skills_for_this_zone = ZONE_ALLOWED_SKILLS.get(zone_name, [zone_name])
+        
+#         while status["current_assigned"] < status["min"]:
+#             best_worker = None
+#             best_skill_lvl = 0
+            
+#             for w in unassigned_workers:
+#                 matching_skills = [w["raw_skills"].get(s, 0) for s in allowed_skills_for_this_zone]
+#                 skill_lvl = max(matching_skills) if matching_skills else 0
+                
+#                 if skill_lvl > best_skill_lvl:
+#                     best_skill_lvl = skill_lvl
+#                     best_worker = w
+            
+#             if best_worker:
+#                 final_assignments[best_worker["id"]] = zone_name
+#                 status["current_assigned"] += 1
+#                 unassigned_workers.remove(best_worker)
+#             else:
+#                 if status["min"] > 0 and status["current_assigned"] < status["min"]:
+#                     print(f"⚠️ MANKAMENT: Nie można spełnić MIN dla strefy {zone_name}. Brak wolnych ludzi w dedykowanym klastrze!")
+#                 break
+
+#     # --- KROK 2: ROZDZIELENIE RESZTY W RAMACH ICH NAJLEPSZYCH KLASTRÓW ---
+#     for w in list(unassigned_workers):
+#         sorted_skills = sorted(w["raw_skills"].items(), key=lambda x: x[1], reverse=True)
+#         assigned = False
+        
+#         for preferred_zone, skill_lvl in sorted_skills:
+#             if preferred_zone in zones_status:
+#                 status = zones_status[preferred_zone]
+#                 allowed_skills = ZONE_ALLOWED_SKILLS.get(preferred_zone, [preferred_zone])
+#                 has_valid_cluster_skill = any(w["raw_skills"].get(s, 0) > 0 for s in allowed_skills)
+                
+#                 if has_valid_cluster_skill and status["current_assigned"] < status["max"]:
+#                     final_assignments[w["id"]] = preferred_zone
+#                     status["current_assigned"] += 1
+#                     unassigned_workers.remove(w)
+#                     assigned = True
+#                     break
+        
+#         # --- KROK 3: REZERWOWY FALLBACK ---
+#         if not assigned:
+#             final_assignments[w["id"]] = "Pick"
+#             if "Pick" in zones_status:
+#                 zones_status["Pick"]["current_assigned"] += 1
+
+#     print(f"✅ OPTIMIZER: Przydzielono {len(final_assignments)} osób.")
+#     for z, s in zones_status.items():
+#         print(f"📊 {z}: {s['current_assigned']} osób (Min: {s['min']}, Max: {s['max']})")
+
+#     # --- KROK 4: SŁOWNIK TŁUMACZĄCY NA IDENTYFIKATORY DLA REACTA ---
+#     ZONE_TO_REACT_ID = {
+#         "Rozładunek": "receiving",
+#         "Przyjęcie": "receiving",
+#         "Załadunki": "shipping",
+#         "Putaway": "putaway",
+#         "Pick": "picking",
+#         "Pack": "packing",
+#         "Sort": "sorting"
+#     }
+
+#     react_assignments = {}
+#     for worker_id, db_zone_name in final_assignments.items():
+#         react_id = ZONE_TO_REACT_ID.get(db_zone_name)
+#         if react_id:
+#             react_assignments[worker_id] = react_id
+            
+#     return react_assignments
 
 
 # async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target_date: date = None):

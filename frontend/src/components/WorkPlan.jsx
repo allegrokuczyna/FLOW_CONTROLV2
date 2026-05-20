@@ -7,8 +7,7 @@ const ZONES = [
     { id: 'putaway', label: 'Putaway' },
     { id: 'picking', label: 'Picking' },
     { id: 'packing', label: 'Packing' },
-    { id: 'sorting', label: 'Sorting' },
-    { id: 'shipping', label: 'Shipping' }
+    { id: 'sorting', label: 'Sorting' }
 ];
 
 const WorkPlan = () => {
@@ -19,7 +18,7 @@ const WorkPlan = () => {
     
     const [pool, setPool] = useState([]);
     const [zones, setZones] = useState({
-        receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: []
+        receiving: [], putaway: [], picking: [], packing: [], sorting: []
     });
 
     // --- HELPER: NAJLEPSZY SKILL ---
@@ -29,8 +28,7 @@ const WorkPlan = () => {
             { id: 'putaway', label: 'Put', val: worker.putaway || 0 },
             { id: 'picking', label: 'Pick', val: worker.picking || 0 },
             { id: 'packing', label: 'Pack', val: worker.packing || 0 },
-            { id: 'sorting', label: 'Sort', val: worker.sorting || 0 },
-            { id: 'shipping', label: 'Ship', val: worker.shipping || worker.załadunki || 0 }
+            { id: 'sorting', label: 'Sort', val: worker.sorting || 0 }
         ];
         const best = skills.reduce((prev, current) => (prev.val > current.val) ? prev : current);
         return best.val > 0 ? best : { label: 'Newbie', val: 0 };
@@ -44,7 +42,7 @@ const WorkPlan = () => {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: [] };
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
             const newPool = [];
 
             if (allWorkers && Array.isArray(allWorkers)) {
@@ -123,7 +121,7 @@ const WorkPlan = () => {
             const suggestions = response.data; 
 
             const allWorkers = [...pool, ...Object.values(zones).flat()];
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], shipping: [] };
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
             const newPool = [];
 
             allWorkers.forEach(w => {
