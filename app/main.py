@@ -1,6 +1,9 @@
 import asyncio
 import sys
 import selectors
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
 if sys.platform == 'win32':
@@ -9,33 +12,36 @@ if sys.platform == 'win32':
     asyncio.set_event_loop(loop)
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from app.db.database import engine, Base
+from app.db.database import engine, Base, AsyncSessionLocal
 from app.api.endpoints import router as api_router
 import app.db.models 
-from fastapi.middleware.cors import CORSMiddleware
-
+from app.services.gate_sync import poll_gates_and_update # <-- Agent SSRS (pobieranie z raportu)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 1. Inicjalizacja głównej bazy (Postgres)
     print("⏳ Uruchamianie serwera: Tworzenie tabel w bazie danych...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("✅ Baza danych gotowa!")
-    yield
 
-# Inicjalizacja instancji FastAPI
+    # 2. Uruchomienie zadań w tle (Bramki)
+    print("🚀 Uruchamianie zadań w tle (Bramki SSRS)...")
+    async with AsyncSessionLocal() as session:
+        gate_task = asyncio.create_task(poll_gates_and_update(session))
+        
+        yield 
+        
+        print("🛑 Zamykanie zadań w tle...")
+        gate_task.cancel()
+
+
 app = FastAPI(title="Flow Control API V2", lifespan=lifespan)
 
-# router z endpointami
+# Podpięcie głównych ścieżek
 app.include_router(api_router, prefix="/api")
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "Witaj w Flow Control V2!"}
-
+# Ustawienia CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,3 +49,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "Witaj w Flow Control V2!"}

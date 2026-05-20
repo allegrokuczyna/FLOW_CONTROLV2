@@ -1,8 +1,7 @@
 from fastapi import APIRouter
 
-
 from app.api.routers import auth, sync, works, plan, analystics, ai
-
+from app.services.gate_sync import poll_gates_and_update
 
 
 router = APIRouter()

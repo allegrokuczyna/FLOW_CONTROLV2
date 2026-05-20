@@ -114,22 +114,31 @@ const WorkPlan = () => {
     const handleAISuggestion = async () => {
         setIsLoading(true);
         try {
+            // 1. Zbieramy loginy osób, które już są rozpisane na strefach (zablokowane)
+            const assignedLogins = Object.values(zones)
+                .flat()
+                .map(w => String(w.worker_login));
+
             const response = await axios.post('/api/plan/ai_suggest', { 
                 shift: shift,
-                target_date: date 
+                target_date: date,
+                locked_logins: assignedLogins // <--- Wysyłamy zablokowanych do backendu
             });
             const suggestions = response.data; 
 
-            const allWorkers = [...pool, ...Object.values(zones).flat()];
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            // 2. Klonujemy aktualny stan stref (żeby nie ruszać tych już przypisanych)
+            const newZones = { ...zones };
             const newPool = [];
 
-            allWorkers.forEach(w => {
+            // 3. Iterujemy TYLKO po pracownikach, którzy są obecnie w "Unassigned Pool"
+            pool.forEach(w => {
                 const suggestedTask = suggestions[String(w.worker_login)];
                 if (suggestedTask && newZones[suggestedTask]) {
-                    newZones[suggestedTask].push({ ...w, task: suggestedTask });
+                    // Jeśli AI znalazło dla niego miejsce, dodajemy go do strefy
+                    newZones[suggestedTask] = [...newZones[suggestedTask], { ...w, task: suggestedTask }];
                 } else {
-                    newPool.push({ ...w, task: 'unassigned' });
+                    // Jeśli dalej nie ma miejsca, zostaje w puli
+                    newPool.push(w);
                 }
             });
 
@@ -177,8 +186,13 @@ const WorkPlan = () => {
         }
     };
 
+    // --- KARTA PRACOWNIKA ---
     const WorkerCard = ({ worker, sourceZone }) => {
         const topSkill = getBestSkill(worker);
+        
+        // Zabezpieczenie: jeśli imię to po prostu "pracownik", nie pokazujemy go
+        const nameToDisplay = worker.full_name?.toLowerCase() === 'pracownik' ? null : worker.full_name;
+
         return (
             <div
                 draggable
@@ -189,10 +203,17 @@ const WorkPlan = () => {
             >
                 <div className="flex justify-between items-start mb-2">
                     <div className="flex flex-col gap-1 w-full overflow-hidden">
-                        <span className="text-[10px] font-black text-slate-400 tracking-tight leading-none uppercase">{worker.worker_login}</span>
-                        <span className="text-[11px] font-black text-slate-800 leading-none uppercase truncate" title={worker.full_name}>
-                            {worker.full_name || "Brak Danych"}
+                        {/* SAM LOGIN - ZROBIONY NA GŁÓWNY PUNKT KARTY */}
+                        <span className="text-[13px] font-black text-slate-800 tracking-tight leading-none uppercase">
+                            {worker.worker_login}
                         </span>
+                        
+                        {/* Imię pokazuje się TYLKO jeśli to faktyczne imię, a nie domyślne "PRACOWNIK" */}
+                        {nameToDisplay && (
+                            <span className="text-[9px] font-bold text-slate-400 leading-none uppercase truncate" title={nameToDisplay}>
+                                {nameToDisplay}
+                            </span>
+                        )}
 
                         <div className={`flex items-center w-fit gap-1 px-1.5 py-0.5 mt-1 rounded-md text-[8px] font-black uppercase tracking-tighter border ${
                             topSkill.val >= 5 ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-200 text-slate-500'

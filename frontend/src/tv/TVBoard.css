@@ -1,0 +1,146 @@
+.tv-board-container {
+  background-color: #09090b; /* Głęboka czerń */
+  color: #ffffff;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  height: 100vh;
+  padding: 30px 40px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.tv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid #27272a;
+  padding-bottom: 15px;
+  margin-bottom: 30px;
+}
+
+.tv-title {
+  font-size: 2.2rem;
+  font-weight: 900;
+  margin: 0;
+  color: #a855f7;
+  letter-spacing: 2px;
+}
+
+.tv-clock {
+  font-size: 2.5rem;
+  font-weight: 900;
+  color: #ffffff;
+  letter-spacing: 3px;
+}
+
+/* Główny kontener na 3 kolumny (bramki) */
+.tv-gates-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr; /* Równo 3 kolumny */
+  flex: 1;
+  background-color: #121214;
+  border-radius: 16px;
+  border: 2px solid #27272a;
+  overflow: hidden; /* żeby zaokrąglenia działały */
+}
+
+.tv-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+/* Gruba linia oddzielająca bramki */
+.tv-border-right {
+  border-right: 4px solid #27272a;
+}
+
+/* Nagłówek bramki (BRAMKA 1, BRAMKA 2...) */
+.tv-gate-title {
+  font-size: 3rem;
+  font-weight: 900;
+  color: #52525b;
+  margin: 0 0 50px 0;
+  letter-spacing: 4px;
+}
+
+/* Kontener na dane pracownika */
+.tv-worker-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+  gap: 30px;
+}
+
+/* Ogromny Login */
+.tv-login {
+  font-size: 6rem; /* Ekstremalnie duży */
+  font-weight: 900;
+  color: #f4f4f5;
+  margin: 0;
+  letter-spacing: 2px;
+}
+
+/* Strefa / Zadanie */
+.tv-task {
+  font-size: 4.5rem;
+  font-weight: 900;
+  color: #10b981; /* Jaskrawy zielony */
+  margin: 0;
+  text-transform: uppercase;
+  background-color: rgba(16, 185, 129, 0.1);
+  padding: 10px 30px;
+  border-radius: 12px;
+  border: 2px solid #10b981;
+}
+
+/* Czerwony kolor, gdy brak strefy */
+.tv-task.unassigned {
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-color: #ef4444;
+  animation: pulse-alert 2s infinite;
+}
+
+/* Gdy slot jest pusty */
+.tv-worker-empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+}
+
+.tv-worker-empty p {
+  font-size: 4rem;
+  font-weight: 900;
+  color: #27272a;
+}
+
+.tv-pagination {
+  text-align: center;
+  font-size: 1.8rem;
+  color: #71717a;
+  margin-top: 20px;
+  font-weight: bold;
+}
+
+/* Animacje wejścia */
+.animate-fade {
+  animation: fade-in 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes fade-in {
+  0% { opacity: 0; transform: scale(0.98); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-alert {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { transform: scale(1.05); box-shadow: 0 0 20px 10px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}

@@ -3,9 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from datetime import date
 from sqlalchemy import func, select
+import asyncio
+import sys
+import selectors
+from contextlib import asynccontextmanager
+
 
 from app.db.database import get_db
-from app.db.models import User
+from app.db.models import User, Schedule, ShiftAssignment # <-- TUTAJ: Dodano wymagane modele
 from app.db.schemas import AssignmentSchema, DailyConstraintsSave
 from app.api.deps import get_current_user
 from app.services.sync_service import (
@@ -29,7 +34,7 @@ async def get_weekly_schedule_api(db: AsyncSession = Depends(get_db)):
     return await get_weekly_schedule(db)
 
 # ╔════════════════════════════════════════════════════════════════════════╗
-# ║ 👥 OBSADA PRACOWNICZA DLA ZMIANY             ║
+# ║ 👥 OBSADA PRACOWNICZA DLA ZMIANY                                       ║
 # ╚════════════════════════════════════════════════════════════════════════╝
 @router.get("/plan/workers/{shift_id}")
 async def get_workers_for_shift(shift_id: str, target_date: date = None, db: AsyncSession = Depends(get_db)):
@@ -44,6 +49,47 @@ async def get_workers_for_shift(shift_id: str, target_date: date = None, db: Asy
         
     filtered_plan = [worker for worker in daily_plan if str(worker.get("shift")) == str(shift_id)]
     return filtered_plan
+
+# ╔════════════════════════════════════════════════════════════════════════╗
+# ║ BOARD PODLGAD                          
+# ╚════════════════════════════════════════════════════════════════════════╝
+@router.get("/plan/tv-board")
+async def get_tv_board_data(target_date: date = None, db: AsyncSession = Depends(get_db)):
+    """
+    Zwraca listę obecnych pracowników (odbitych na bramce) wraz z przypisaną 
+    przez kierownika strefą z Drag&Drop, gotową do wyświetlenia na ekranie TV.
+    """
+    if target_date is None:
+        target_date = date.today()
+        
+
+    stmt = select(Schedule, ShiftAssignment).outerjoin(
+        ShiftAssignment,
+        (Schedule.login == ShiftAssignment.worker_login) & 
+        (Schedule.work_date == ShiftAssignment.assignment_date)
+    ).where(
+        Schedule.work_date == target_date,
+        Schedule.is_present == True
+    )
+    
+    result = await db.execute(stmt)
+    rows = result.all()
+    
+    response_data = []
+    for schedule_obj, assignment_obj in rows:
+        
+        
+        assigned_task = assignment_obj.task if assignment_obj else "unassigned"
+        
+        response_data.append({
+            "login": schedule_obj.login,
+            "full_name": schedule_obj.full_name or "Pracownik",
+            "task": assigned_task,
+            "shift": schedule_obj.planned_shift
+        })
+        
+    return response_data
+
 
 # ╔════════════════════════════════════════════════════════════════════════╗
 # ║ 💾 ZAPIS PRZYDZIAŁÓW (GRAFIKU)                                         ║
@@ -81,5 +127,3 @@ async def save_constraints(payload: DailyConstraintsSave, db: AsyncSession = Dep
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-
