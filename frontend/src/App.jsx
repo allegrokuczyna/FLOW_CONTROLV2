@@ -5,11 +5,20 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import WorkPlan from './components/WorkPlan';
 import SystemData from './components/SystemData';
-// DODANY IMPORT NOWEGO KOMPONENTU
 import ScheduleGrid from './components/ScheduleGrid';
 import ProductivityGrid from './components/ProductivityGrid';
 
+// 1. DODANY IMPORT TABLICY TV Z NOWEGO FOLDERU
+import TVBoard from './tv/TVBoard'; 
+
 function App() {
+  // =========================================================================
+
+  // =========================================================================
+  if (window.location.pathname === '/tv') {
+    return <TVBoard />;
+  }
+
   // Stan autoryzacji - sprawdza token w localStorage
   const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
   
@@ -27,11 +36,11 @@ function App() {
     switch (activeTab) {
       case 'dashboard': return 'System Overview';
       case 'plan':      return 'Warehouse Flow Control | Plan';
-      case 'schedule':  return 'Full Weekly Schedule'; // DODANY NAGŁÓWEK DLA GRAFIKU
+      case 'schedule':  return 'Full Weekly Schedule';
       case 'dane':      return 'AI Configuration | System Data';
       case 'live':      return 'Live Operations Status';
       case 'sync':      return 'D365 Data Synchronization';
-      case 'productivity': return 'Productivity Metrics'; // DODANY NAGŁÓWEK DLA WIDOKU PRODUCTIVITY
+      case 'productivity': return 'Productivity Metrics';
       default:          return 'Adamów Operational Node';
     }
   };
@@ -77,7 +86,7 @@ function App() {
             </div>
           )}
 
-          {/* Widok: PEŁNY GRAFIK (SCHEDULE GRID) - NOWY */}
+          {/* Widok: PEŁNY GRAFIK (SCHEDULE GRID) */}
           {activeTab === 'schedule' && (
             <div className="absolute inset-0 overflow-hidden p-8 animate-in fade-in duration-300">
                <ScheduleGrid />
@@ -98,8 +107,8 @@ function App() {
             </div>
           )}
 
-          {/* EKRAN DLA MODUŁÓW W BUDOWIE - dodano wyjątek dla 'schedule' */}
-          {activeTab !== 'dashboard' && activeTab !== 'plan' && activeTab !== 'dane' && activeTab !== 'schedule' && (
+          {/* EKRAN DLA MODUŁÓW W BUDOWIE */}
+          {activeTab !== 'dashboard' && activeTab !== 'plan' && activeTab !== 'dane' && activeTab !== 'schedule' && activeTab !== 'productivity' && (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 bg-white/50">
               <Bot size={64} className="mb-4 opacity-10" />
               <h2 className="text-2xl font-black uppercase tracking-widest opacity-20">

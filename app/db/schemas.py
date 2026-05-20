@@ -32,6 +32,7 @@ class AssignmentSchema(BaseModel):
 class AiRequest(BaseModel):
     shift: Union[int, str]
     target_date: Optional[str] = None
+    locked_logins: Optional[List[str]] = [] # dodane pole dla zablokowanych loginow, 
 
 
 class ZoneConstraintUpdate(BaseModel):

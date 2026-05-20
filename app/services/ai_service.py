@@ -18,7 +18,9 @@ CHUNK_SIZE = 10
 # ==============================================================================
 
 
-async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target_date: date = None):
+async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target_date: date = None, locked_logins: list = None):
+    if locked_logins is None:
+        locked_logins = []
     now = datetime.now()
     
     if target_date is None:
@@ -44,6 +46,9 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
     IGNORED_KEYS = ['id', 'login', 'worker_login', 'full_name', 'worker_name', 'updated_at', 'created_at', 'timestamp', 'date']
 
     for login, shift_name, perf in rows:
+        # BEZPIECZNIK
+        if str(login) in locked_logins:
+            continue
         db_shift_str = str(shift_name).strip()
         if get_shift_number(db_shift_str) == str(shift_id):
             worker_skills = {}
