@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Award } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling'; // <-- IMPORT HOOKA
 
 const ZONES = [
     { id: 'receiving', label: 'Receiving' },
@@ -21,7 +22,6 @@ const WorkPlan = () => {
         receiving: [], putaway: [], picking: [], packing: [], sorting: []
     });
 
-    // --- HELPER: NAJLEPSZY SKILL ---
     const getBestSkill = (worker) => {
         const skills = [
             { id: 'receiving', label: 'Rec', val: worker.receiving || 0 },
@@ -34,7 +34,7 @@ const WorkPlan = () => {
         return best.val > 0 ? best : { label: 'Newbie', val: 0 };
     };
 
-    // --- POBIERANIE DANYCH ---
+    // --- POBIERANIE GŁÓWNE (Z Loaderem) ---
     const fetchData = async () => {
         setIsLoading(true);
         try {
@@ -48,7 +48,6 @@ const WorkPlan = () => {
             if (allWorkers && Array.isArray(allWorkers)) {
                 allWorkers.forEach(worker => {
                     const currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
-                    
                     if (currentTask !== 'unassigned' && newZones[currentTask]) {
                         newZones[currentTask].push(worker);
                     } else {
@@ -67,11 +66,68 @@ const WorkPlan = () => {
         }
     };
 
-    useEffect(() => {
-        fetchData();
-    }, [date, shift]);
+    useEffect(() => { fetchData(); }, [date, shift]);
 
-    // --- DRAG & DROP LOGIKA ---
+    // --- CICHE ODŚWIEŻANIE W TLE (Live Presence) ---
+    const fetchLiveUpdates = async () => {
+        try {
+            const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
+            const freshWorkers = response.data;
+            const freshLookup = {};
+            freshWorkers.forEach(w => freshLookup[w.worker_login] = w);
+
+            setPool(prevPool => prevPool.map(worker => {
+                const freshData = freshLookup[worker.worker_login];
+                return (freshData && freshData.is_present !== worker.is_present) 
+                    ? { ...worker, is_present: freshData.is_present } : worker;
+            }));
+
+            setZones(prevZones => {
+                const updatedZones = { ...prevZones };
+                let hasChanges = false;
+                Object.keys(updatedZones).forEach(zoneId => {
+                    updatedZones[zoneId] = updatedZones[zoneId].map(worker => {
+                        const freshData = freshLookup[worker.worker_login];
+                        if (freshData && freshData.is_present !== worker.is_present) {
+                            hasChanges = true;
+                            return { ...worker, is_present: freshData.is_present };
+                        }
+                        return worker;
+                    });
+                });
+                return hasChanges ? updatedZones : prevZones;
+            });
+        } catch (error) {
+            console.warn("Background sync failed:", error.message);
+        }
+    };
+
+    // Odpalamy ciche odświeżanie co 10 sekund (10000ms)
+    usePolling(fetchLiveUpdates, 10000);
+
+    const handlePresenceChange = async (workerLogin, currentStatus) => {
+        const newStatus = !currentStatus; 
+        try {
+            const response = await axios.post('http://127.0.0.1:8002/api/plan/update-presence', {
+                login: String(workerLogin),
+                is_present: newStatus
+            });
+            if (response.status === 200) {
+                setPool(prev => prev.map(w => String(w.worker_login) === String(workerLogin) ? { ...w, is_present: newStatus } : w));
+                setZones(prev => {
+                    const newZones = { ...prev };
+                    Object.keys(newZones).forEach(zoneId => {
+                        newZones[zoneId] = newZones[zoneId].map(w => String(w.worker_login) === String(workerLogin) ? { ...w, is_present: newStatus } : w);
+                    });
+                    return newZones;
+                });
+            }
+        } catch (error) {
+            console.error("❌ Błąd podczas zmiany obecności:", error);
+            alert("Nie udało się zaktualizować statusu obecności w bazie danych.");
+        }
+    };
+
     const handleDragStart = (e, workerId, sourceZone) => {
         e.dataTransfer.setData('workerId', workerId);
         e.dataTransfer.setData('sourceZone', sourceZone);
@@ -80,7 +136,6 @@ const WorkPlan = () => {
     const handleDrop = (e, targetZone) => {
         const workerId = e.dataTransfer.getData('workerId');
         const sourceZone = e.dataTransfer.getData('sourceZone');
-
         if (!workerId || sourceZone === targetZone) return;
 
         let worker;
@@ -91,10 +146,7 @@ const WorkPlan = () => {
         } else {
             worker = zones[sourceZone].find(w => String(w.worker_login) === String(workerId));
             if (!worker) return;
-            setZones(prev => ({ 
-                ...prev, 
-                [sourceZone]: prev[sourceZone].filter(w => String(w.worker_login) !== String(workerId)) 
-            }));
+            setZones(prev => ({ ...prev, [sourceZone]: prev[sourceZone].filter(w => String(w.worker_login) !== String(workerId)) }));
         }
 
         const updatedWorker = { ...worker, task: targetZone };
@@ -102,42 +154,26 @@ const WorkPlan = () => {
         if (targetZone === 'pool') {
             setPool(prev => [...prev, { ...updatedWorker, task: 'unassigned' }]);
         } else {
-            setZones(prev => ({ 
-                ...prev, 
-                [targetZone]: [...prev[targetZone], updatedWorker] 
-            }));
+            setZones(prev => ({ ...prev, [targetZone]: [...prev[targetZone], updatedWorker] }));
         }
         setIsDraft(true);
     };
 
-    // --- AI/OPTIMIZER SUGGESTION ---
     const handleAISuggestion = async () => {
         setIsLoading(true);
         try {
-            // 1. Zbieramy loginy osób, które już są rozpisane na strefach (zablokowane)
-            const assignedLogins = Object.values(zones)
-                .flat()
-                .map(w => String(w.worker_login));
-
-            const response = await axios.post('/api/plan/ai_suggest', { 
-                shift: shift,
-                target_date: date,
-                locked_logins: assignedLogins // <--- Wysyłamy zablokowanych do backendu
-            });
+            const assignedLogins = Object.values(zones).flat().map(w => String(w.worker_login));
+            const response = await axios.post('/api/plan/ai_suggest', { shift: shift, target_date: date, locked_logins: assignedLogins });
             const suggestions = response.data; 
 
-            // 2. Klonujemy aktualny stan stref (żeby nie ruszać tych już przypisanych)
             const newZones = { ...zones };
             const newPool = [];
 
-            // 3. Iterujemy TYLKO po pracownikach, którzy są obecnie w "Unassigned Pool"
             pool.forEach(w => {
                 const suggestedTask = suggestions[String(w.worker_login)];
                 if (suggestedTask && newZones[suggestedTask]) {
-                    // Jeśli AI znalazło dla niego miejsce, dodajemy go do strefy
                     newZones[suggestedTask] = [...newZones[suggestedTask], { ...w, task: suggestedTask }];
                 } else {
-                    // Jeśli dalej nie ma miejsca, zostaje w puli
                     newPool.push(w);
                 }
             });
@@ -152,27 +188,17 @@ const WorkPlan = () => {
         }
     };
 
-    // --- POTWIERDZENIE I ZAPIS ---
     const handleConfirm = async () => {
         setIsLoading(true);
         try {
             const assignments = [];
             Object.keys(zones).forEach(zoneId => {
                 zones[zoneId].forEach(worker => {
-                    assignments.push({
-                        worker_login: String(worker.worker_login),
-                        shift: shift,
-                        task: zoneId
-                    });
+                    assignments.push({ worker_login: String(worker.worker_login), shift: shift, task: zoneId });
                 });
             });
-
             pool.forEach(worker => {
-                assignments.push({
-                    worker_login: String(worker.worker_login),
-                    shift: shift,
-                    task: 'unassigned'
-                });
+                assignments.push({ worker_login: String(worker.worker_login), shift: shift, task: 'unassigned' });
             });
 
             await axios.post(`/api/plan/save?target_date=${date}`, assignments);
@@ -186,52 +212,50 @@ const WorkPlan = () => {
         }
     };
 
-    // --- KARTA PRACOWNIKA ---
     const WorkerCard = ({ worker, sourceZone }) => {
         const topSkill = getBestSkill(worker);
-        
-        // Zabezpieczenie: jeśli imię to po prostu "pracownik", nie pokazujemy go
         const nameToDisplay = worker.full_name?.toLowerCase() === 'pracownik' ? null : worker.full_name;
+        const isPresent = !!worker.is_present;
+        const presenceClasses = isPresent 
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-900' 
+            : 'bg-rose-50 border-rose-300 text-rose-900';         
 
         return (
             <div
                 draggable
                 onDragStart={(e) => handleDragStart(e, worker.worker_login, sourceZone)}
-                className={`p-3 rounded-xl border mb-2 cursor-grab active:cursor-grabbing shadow-sm transition-all hover:border-indigo-400 ${
-                    isDraft ? 'bg-indigo-50/50 border-indigo-200' : 'bg-white border-slate-200'
-                }`}
+                className={`p-3 rounded-xl border mb-2 cursor-grab active:cursor-grabbing shadow-sm transition-all hover:shadow-md ${presenceClasses}`}
             >
                 <div className="flex justify-between items-start mb-2">
                     <div className="flex flex-col gap-1 w-full overflow-hidden">
-                        {/* SAM LOGIN - ZROBIONY NA GŁÓWNY PUNKT KARTY */}
-                        <span className="text-[13px] font-black text-slate-800 tracking-tight leading-none uppercase">
-                            {worker.worker_login}
-                        </span>
-                        
-                        {/* Imię pokazuje się TYLKO jeśli to faktyczne imię, a nie domyślne "PRACOWNIK" */}
+                        <span className="text-[14px] font-black tracking-tight leading-none uppercase">{worker.worker_login}</span>
                         {nameToDisplay && (
-                            <span className="text-[9px] font-bold text-slate-400 leading-none uppercase truncate" title={nameToDisplay}>
-                                {nameToDisplay}
-                            </span>
+                            <span className="text-[9px] font-bold opacity-60 leading-none uppercase truncate" title={nameToDisplay}>{nameToDisplay}</span>
                         )}
-
-                        <div className={`flex items-center w-fit gap-1 px-1.5 py-0.5 mt-1 rounded-md text-[8px] font-black uppercase tracking-tighter border ${
-                            topSkill.val >= 5 ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-slate-50 border-slate-200 text-slate-500'
-                        }`}>
+                        <div className={`flex items-center w-fit gap-1 px-1.5 py-0.5 mt-1 rounded-md text-[8px] font-black uppercase tracking-tighter border ${topSkill.val >= 5 ? 'bg-amber-100/50 border-amber-300 text-amber-700' : 'bg-white/50 border-slate-300/50 text-slate-500'}`}>
                             {topSkill.val >= 5 && <Award size={10} className="text-amber-500" />}
                             {topSkill.label}: {topSkill.val}
                         </div>
                     </div>
                     <div className="flex gap-0.5 pt-0.5 shrink-0">
                         {[1, 2, 3, 4, 5, 6].map(i => (
-                            <div key={i} className={`w-1 h-3 rounded-full ${worker.picking >= i ? 'bg-indigo-500' : 'bg-slate-100'}`} />
+                            <div key={i} className={`w-1 h-3 rounded-full ${worker.picking >= i ? 'bg-indigo-500' : 'bg-black/10'}`} />
                         ))}
                     </div>
                 </div>
-                <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-50">
-                    <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase">
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-black/10">
+                    <div className="flex items-center gap-1 text-[9px] font-bold opacity-70 uppercase">
                         <Clock size={10} /> {worker.hours || '8h'}
                     </div>
+                    <label className="text-[9px] font-black uppercase tracking-wider cursor-pointer flex items-center gap-1.5 opacity-80 hover:opacity-100 transition-opacity">
+                        <input 
+                            type="checkbox"
+                            checked={isPresent}
+                            onChange={() => handlePresenceChange(worker.worker_login, isPresent)}
+                            className="w-3.5 h-3.5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
+                        />
+                        Na hali
+                    </label>
                 </div>
             </div>
         );
@@ -270,7 +294,6 @@ const WorkPlan = () => {
 
             {/* MAIN WORKSPACE */}
             <div className="flex flex-1 overflow-hidden p-6 gap-6">
-                {/* Pula nieprzypisanych */}
                 <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-72 bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-[2.5rem] flex flex-col overflow-hidden shadow-inner shrink-0">
                     <div className="p-5 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
                         <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Unassigned Pool</span>
@@ -281,7 +304,6 @@ const WorkPlan = () => {
                     </div>
                 </div>
 
-                {/* Kolumny stref */}
                 <div className="flex-1 flex gap-4 overflow-x-auto pb-4 custom-scrollbar">
                     {ZONES.map(zone => (
                         <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-[2rem] flex flex-col min-w-[220px] max-w-[260px] flex-1 shadow-sm overflow-hidden hover:border-indigo-200 transition-all group">
@@ -297,7 +319,6 @@ const WorkPlan = () => {
                 </div>
             </div>
 
-            {/* LOADER OVERLAY */}
             {isLoading && (
                 <div className="absolute inset-0 bg-slate-900/10 backdrop-blur-[2px] z-50 flex items-center justify-center">
                     <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center border border-slate-200 animate-in zoom-in duration-200">

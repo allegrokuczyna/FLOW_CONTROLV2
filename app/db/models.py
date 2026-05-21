@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint, Text, func # dodaje Date
+from sqlalchemy import Column, Integer, String, Float, Date, Boolean, DateTime, UniqueConstraint, Text, func, ForeignKey # dodaje Date
 from app.db.database import Base
 from datetime import datetime, date
 
@@ -59,7 +59,7 @@ class Schedule(Base):
     work_date = Column(Date, index=True, nullable=False) 
     planned_shift = Column(String(50))
     is_present = Column(Boolean, default=False)
-    group_prefix = Column(String, nullable=True) #prefikz z przypisaniem do dzialu O = Operacja.
+    group_prefix = Column(String, nullable=True) #prefiks z przypisaniem do dzialu O = Operacja.
     
     # To jest kluczowe dla funkcji "upsert" (żeby się nie duplikowało przy ponownym pobraniu)
     __table_args__ = (UniqueConstraint('login', 'work_date', name='uix_login_date'),)
@@ -178,3 +178,17 @@ class ZoneConstraint(Base):
     __table_args__ = (
         UniqueConstraint('zone_name', 'target_date', name='uq_zone_date'),
     )
+
+
+class SalesTable(Base):
+    __tablename__ = "salestable"
+    id = Column(Integer, primary_key=True, index=True)
+    salesorderlinecreationmethod = Column(String, index=True)
+    sourceordernumber = Column(String, index=True)
+    salesorderprocessingstatus = Column(String, index=True)
+    deliverymodecode = Column(String, index=True)
+    orderedsalesquantity = Column(Integer, nullable=False)
+    itemnumber = Column(String, nullable=False)
+    requestedshippingdate = Column(DateTime, nullable=True)
+    ordercreationdatetime = Column(DateTime, nullable=False)
+

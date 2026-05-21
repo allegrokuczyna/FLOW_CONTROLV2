@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { Search, RefreshCcw, AlertTriangle, SlidersHorizontal, Check, Zap } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling'; // <-- IMPORT HOOKA
 
 const ProductivityGrid = () => {
     const [performanceData, setPerformanceData] = useState([]);
@@ -11,7 +12,7 @@ const ProductivityGrid = () => {
     const [selectedZones, setSelectedZones] = useState([]);
     const [showZoneMenu, setShowZoneMenu] = useState(false);
 
-    // Pobieranie danych
+    // Główne pobieranie
     const fetchProductivity = async () => {
         setLoading(true);
         setError(null);
@@ -23,28 +24,38 @@ const ProductivityGrid = () => {
                 throw new Error("Nieprawidłowy format danych z serwera matrycy");
             }
         } catch (err) {
-            console.error("Błąd pobierania matrycy produktywności:", err);
             setError(err.response?.data?.detail || err.message || "Wystąpił błąd");
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { 
-        fetchProductivity(); 
-    }, []);
+    // Ciche pobieranie w tle
+    const fetchProductivitySilent = async () => {
+        try {
+            const res = await axios.get('/api/productivity');
+            if (Array.isArray(res.data)) {
+                setPerformanceData(res.data);
+            }
+        } catch (err) {
+            console.warn("Background productivity sync failed");
+        }
+    };
+
+    useEffect(() => { fetchProductivity(); }, []);
+
+    // Odświeżaj tabelę w tle co 15 sekund
+    usePolling(fetchProductivitySilent, 15000);
 
     const safePerformances = useMemo(() => {
         return Array.isArray(performanceData) ? performanceData : [];
     }, [performanceData]);
 
-    // Ignorowane kolumny techniczne
     const IGNORED_KEYS = ['id', 'login', 'worker_login', 'full_name', 'worker_name', 'updated_at', 'created_at', 'timestamp', 'date'];
 
     const allColumns = useMemo(() => {
         if (safePerformances.length === 0) return [];
         const cols = new Set();
-        
         safePerformances.forEach(worker => {
             Object.keys(worker).forEach(key => {
                 if (!IGNORED_KEYS.includes(key.toLowerCase()) && worker[key] !== null && typeof worker[key] !== 'object') {
@@ -61,12 +72,9 @@ const ProductivityGrid = () => {
     }, [allColumns, selectedZones]);
 
     const toggleZoneFilter = (zone) => {
-        setSelectedZones(prev => 
-            prev.includes(zone) ? prev.filter(z => z !== zone) : [...prev, zone]
-        );
+        setSelectedZones(prev => prev.includes(zone) ? prev.filter(z => z !== zone) : [...prev, zone]);
     };
 
-    // Filtrowanie wyszukiwarką
     const filteredWorkers = useMemo(() => {
         return safePerformances.filter(w => {
             const name = String(w.full_name || "").toLowerCase();
@@ -76,7 +84,6 @@ const ProductivityGrid = () => {
         });
     }, [safePerformances, search]);
 
-    // Kolorowanie skilli
     const getSkillClass = (val) => {
         const num = Number(val);
         if (isNaN(num) || num === 0) return 'bg-slate-50 text-slate-300 font-normal border border-slate-100'; 
@@ -107,7 +114,6 @@ const ProductivityGrid = () => {
 
     return (
         <div className="flex flex-col h-full bg-white rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden animate-in fade-in duration-300">
-            
             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 shrink-0">
                 <div className="flex items-center gap-4">
                     <div className="bg-purple-600 p-2 rounded-xl text-white shadow-md shadow-purple-200">
@@ -203,7 +209,6 @@ const ProductivityGrid = () => {
                         ) : (
                             filteredWorkers.map((worker) => (
                                 <tr key={worker.login || worker.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors group">
-                                    {/* ZMIANA TUTAJ: Wyświetlamy TYLKO wycentrowany LOGIN */}
                                     <td className="p-4 border-r border-slate-100 sticky left-0 bg-white group-hover:bg-slate-50 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
                                         <span className="font-black text-slate-700 tracking-wider text-xs">
                                             {worker.login || worker.worker_login || `ID: ${worker.id}`}

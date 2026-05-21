@@ -7,13 +7,13 @@ import WorkPlan from './components/WorkPlan';
 import SystemData from './components/SystemData';
 import ScheduleGrid from './components/ScheduleGrid';
 import ProductivityGrid from './components/ProductivityGrid';
-
+import D365Sync from './components/D365Sync';
 // 1. DODANY IMPORT TABLICY TV Z NOWEGO FOLDERU
 import TVBoard from './tv/TVBoard'; 
 
 function App() {
   // =========================================================================
-
+  // WYJĄTEK DLA TABLICY TV
   // =========================================================================
   if (window.location.pathname === '/tv') {
     return <TVBoard />;
@@ -107,8 +107,20 @@ function App() {
             </div>
           )}
 
-          {/* EKRAN DLA MODUŁÓW W BUDOWIE */}
-          {activeTab !== 'dashboard' && activeTab !== 'plan' && activeTab !== 'dane' && activeTab !== 'schedule' && activeTab !== 'productivity' && (
+          {/* Widok: D365 SYNC (PANEL SYNCHRONIZACJI) - DODANO! */}
+          {activeTab === 'sync' && (
+            <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
+               <D365Sync />
+            </div>
+          )}
+
+          {/* EKRAN DLA MODUŁÓW W BUDOWIE - Zaktualizowany warunek o "sync" */}
+          {activeTab !== 'dashboard' && 
+           activeTab !== 'plan' && 
+           activeTab !== 'dane' && 
+           activeTab !== 'schedule' && 
+           activeTab !== 'productivity' && 
+           activeTab !== 'sync' && (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 bg-white/50">
               <Bot size={64} className="mb-4 opacity-10" />
               <h2 className="text-2xl font-black uppercase tracking-widest opacity-20">

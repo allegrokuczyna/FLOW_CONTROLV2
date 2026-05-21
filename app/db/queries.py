@@ -28,6 +28,27 @@ async def fetch_ai_report_logs(db: AsyncSession, limit: int = 10):
 
 
 # ==============================================================================
+# aktywni pracownicy na magazynie.
+# ==============================================================================
+
+async def get_active_workers(db: AsyncSession, target_date: date):
+    """pobieram liste aktywnych pracowników na magazynie"""
+    stmt = (
+        select(Schedule).filter(Schedule.is_present == True, Schedule.work_date == target_date))
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_inactive_workers(db: AsyncSession, target_date: date):
+    """pobieram liste nieaktywnych pracowników na magazynie"""
+    stmt = (
+        select(Schedule).filter(Schedule.is_present == False, Schedule.work_date == target_date))
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+
+# ==============================================================================
 # SEKCJA: PRACE OPERACYJNE (D365 ACTIVE WORK)
 # ==============================================================================
 
