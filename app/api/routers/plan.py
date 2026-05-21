@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from datetime import date
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 import asyncio
 import sys
 import selectors
@@ -11,12 +11,13 @@ from contextlib import asynccontextmanager
 
 from app.db.database import get_db
 from app.db.models import User, Schedule, ShiftAssignment # <-- TUTAJ: Dodano wymagane modele
-from app.db.schemas import AssignmentSchema, DailyConstraintsSave
+from app.db.schemas import AssignmentSchema, DailyConstraintsSave, PresenceUpdate
 from app.api.deps import get_current_user
 from app.services.sync_service import (
     get_daily_plan, save_daily_plan, get_weekly_schedule, 
     get_all_constraints, update_or_create_constraints, ForecastIntake
 )
+from app.db.queries import get_active_workers, get_inactive_workers
 
 router = APIRouter(tags=["Planowanie i Konfiguracja (Constraints)"])
 
@@ -127,3 +128,66 @@ async def save_constraints(payload: DailyConstraintsSave, db: AsyncSession = Dep
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+
+
+# ╔════════════════════════════════════════════════════════════════════════╗
+# ║ Obecnosc na magazynie
+# ╚════════════════════════════════════════════════════════════════════════╝
+
+
+
+@router.post("/plan/update-presence")
+async def update_worker_presence(payload: PresenceUpdate, db: AsyncSession = Depends(get_db)):
+    """zmiana obecnosci pracownika w magazynie"""
+
+    try:
+        stmt = text("""
+                    UPDATE schedules
+                    SET is_present = :is_present
+                    WHERE login = :login AND work_date = CURRENT_DATE
+                    """)
+        result = await db.execute(stmt, {"is_present": payload.is_present, "login": payload.login})
+        await db.commit()
+
+
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+@router.get("/plan/active-workers")
+async def get_active_workers_query(target_date: date = None, db: AsyncSession = Depends(get_db)):
+    """Pobiera listę pracowników obecnych na magazynie wraz z ich sumą."""
+    if target_date is None:
+        target_date = date.today()
+        
+    try:
+        workers_list = await get_active_workers(db, target_date)
+        
+        return {
+            "count": len(workers_list),
+            "workers": workers_list
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+@router.get("/plan/inactive-workers")
+async def get_inactive_workers_query(target_date: date = None, db: AsyncSession = Depends(get_db)):
+    """Pobiera listę pracowników nieobecnych na magazynie wraz z ich sumą."""
+    if target_date is None:
+        target_date = date.today()
+        
+    try:
+        workers_list = await get_inactive_workers(db, target_date)
+        
+        return {
+            "count": len(workers_list),
+            "workers": workers_list
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    

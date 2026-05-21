@@ -7,7 +7,7 @@ from sqlalchemy import delete, insert, cast, Date, select, func
 from sqlalchemy.dialects.postgresql import insert  # Wyłącznie Postgres
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment, ForecastIntake, ZoneConstraint
+from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment, ForecastIntake, ZoneConstraint, SalesTable
 from dateutil.parser import parse as parse_date
 import logging
 
@@ -538,6 +538,7 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
             "shift": get_shift_number(hours),
             "hours": hours,
             "task": current_task,
+            "is_present": bool(s.is_present), #  reczna zmiana obecnosci
             "picking": getattr(p, 'picking', 0) if p else 0,
             "packing": getattr(p, 'packing', 0) if p else 0,
             "receiving": getattr(p, 'receiving', 0) if p else 0,
@@ -686,3 +687,135 @@ async def update_or_create_constraints(db: AsyncSession, target_date: str | date
 
 
 
+# async def sync_active_orders(db: AsyncSession):
+#     """Live Sync prac zamowien sprzedazy - Wersja Transactional Replace z Paczkowaniem (Batches)."""
+#     print("🚀 START SYNC (Transactional Replace): Pobieram dane z D365...")
+    
+#     filter_query = "ShippingWarehouseId eq 'ADM-01')"
+#     endpoint = f"SalesOrderHeadersV4?cross-company=true&$filter={filter_query}"
+#     print(f"🕵️ TEST URL D365: {endpoint}")
+    
+#     works_data = await get_data(endpoint)
+    
+#     try:
+#         works_data = await get_data(endpoint)
+        
+#         if not works_data:
+#             print("⚠️ Brak danych z D365 lub błąd połączenia. Przerywam, nie czyszczę bazy (fail-safe).")
+#             return
+
+#         print(f"📦 Pobrano {len(works_data)} rekordów z D365. Przygotowuję dane dla bazy...")
+
+#         # Funkcja do bezpiecznego przetwarzania dat
+#         def safe_date(date_str):
+#             if not date_str or str(date_str).startswith("1900"): 
+#                 return None
+#             try:
+#                 return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+#             except Exception:
+#                 return None
+
+#         to_insert = []
+#         sync_time = datetime.utcnow()
+        
+#         for w in works_data:
+#             to_insert.append({
+#                 "salesorderlinecreationmethod": w.get("SalesOrderLineCreationMethod") or "UNKNOWN",
+#                 "sourceordernumber": w.get("SourceOrderNumber", ""),
+#                 "deliverymodecode": w.get("DeliveryModeCode", ""),
+#                 "requestedshippingdate": safe_date(w.get("RequestedShippingDate", "")),
+#                 "orderedsalesquantity": w.get("OrderedSalesQuantity", ""),
+#                 "itemnumber": w.get("ItemNumber", ""),
+#                 "salesorderprocessingstatus": w.get("SalesOrderProcessingStatus", ""),
+#                 "ordercreationdatetime": safe_date(w.get("OrderCreationDateTime", ""))
+#             })
+
+#         # 2. ROZPOCZYNAMY OSTATECZNĄ TRANSAKCJĘ
+#         if len(to_insert) > 0:
+#             print(f"🧹 Usuwam stare 'duchy' z bazy i ładuję nową paczkę ({len(to_insert)} wierszy)...")
+            
+#             # Krok A: Usuwamy całkowicie stare dane
+#             await db.execute(delete(SalesTable))
+            
+#             # Krok B: Wrzucamy w PACZKACH (Batch Insert)
+#             chunk_size = 1000 # Rozmiar paczki
+#             for i in range(0, len(to_insert), chunk_size):
+#                 chunk = to_insert[i:i + chunk_size]
+#                 await db.execute(insert(SalesTable), chunk)
+#                 print(f"📦 Wstawiono paczkę do bazy: {i + len(chunk)} / {len(to_insert)}...")
+        
+#             await db.commit()
+#             print(f"✅ SYNC ZAKOŃCZONY: Baza zaktualizowana bez zająknięcia!")
+#         else:
+#             print("⚠️ Paczka do zapisu jest pusta. Nie modyfikuję bazy.")
+
+#     except Exception as e:
+    
+#         await db.rollback() 
+#         print(f"🔥 KRYTYCZNY BŁĄD PODCZAS PODMIANY DANYCH: {str(e)}")
+
+
+async def sync_template_module(db: AsyncSession):
+    """
+    Uniwersalny szablon do szybkiego importu dowolnej encji z D365.
+    Wystarczy uzupełnić URL, mapowanie pól i nazwę modelu bazy danych.
+    """
+    print("🚀 [SYNC TEMPLATE] Start: Pobieranie danych z D365...")
+    
+
+    
+    endpoint = f"SalesOrderHeadersV4?cross-company=true&top=500"
+    
+    # KRYTYCZNY PRINT DO DEBUGOWANIA
+    print(f"🕵️ TEST URL D365: {endpoint}")
+    
+    try:
+        # Pobieranie z zewnętrznego API
+        raw_data = await get_data(endpoint)
+        
+        # Fail-safe (Zabezpieczenie przed pustą bazą / błędem)
+        if not raw_data:
+            print("⚠️ [SYNC TEMPLATE] Brak danych (lub błąd). Przerywam, zachowuję stare dane w bazie.")
+            return
+
+        print(f"📦 Pobrano {len(raw_data)} rekordów. Mapowanie danych...")
+
+        # 3. Przygotowanie danych (Mapowanie API -> Baza)
+        to_insert = []
+        for item in raw_data:
+            to_insert.append({
+                "salesorderlinecreationmethod": item.get("SalesOrderLineCreationMethod") or "UNKNOWN",
+                "sourceordernumber": item.get("SalesOrderNumber", ""), # W zamówieniach to zwykle SalesOrderNumber
+                "deliverymodecode": item.get("DeliveryModeCode", ""),
+                "requestedshippingdate": item.get("RequestedShippingDate", ""),
+                "orderedsalesquantity": float(item.get("OrderedSalesQuantity") or 0.0), # Rzutowanie na liczbę dla bezpieczeństwa
+                "itemnumber": item.get("ItemNumber", ""),
+                "salesorderprocessingstatus": item.get("SalesOrderProcessingStatus", ""),
+                "ordercreationdatetime": item.get("OrderCreationDateTime", "")
+            })
+            
+        # 4. ROZPOCZĘCIE TRANSAKCJI BAZOWODANOWEJ
+        if len(to_insert) > 0:
+            
+            # Podaj nazwę klasy modelu z Twojego pliku models.py
+            TargetModel = SalesTable 
+            
+            # KROK A: Czyszczenie starych danych (Truncate/Delete)
+            await db.execute(delete(TargetModel))
+            
+            # KROK B: Wstawianie nowych danych w paczkach (Batch Insert) dla wydajności
+            chunk_size = 1000
+            for i in range(0, len(to_insert), chunk_size):
+                chunk = to_insert[i:i + chunk_size]
+                await db.execute(insert(TargetModel), chunk)
+                print(f"🔄 Zapisuję paczkę: {i + len(chunk)} / {len(to_insert)}...")
+                
+            await db.commit()
+            print("✅ [SYNC TEMPLATE] Operacja zakończona pełnym sukcesem!")
+            
+        else:
+            print("⚠️ [SYNC TEMPLATE] Wynikowa paczka po mapowaniu jest pusta. Pomijam zapis.")
+
+    except Exception as e:
+        await db.rollback() 
+        print(f"🔥 [SYNC TEMPLATE] KRYTYCZNY BŁĄD: {str(e)}")

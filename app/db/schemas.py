@@ -52,3 +52,9 @@ class ZoneConstraintUpdate(BaseModel):
 class DailyConstraintsSave(BaseModel):
     target_date: date
     constraints: List[ZoneConstraintUpdate]
+
+
+
+class PresenceUpdate(BaseModel):
+    login: str
+    is_present: bool
