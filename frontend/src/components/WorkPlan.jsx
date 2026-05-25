@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Award } from 'lucide-react';
-import { usePolling } from '../hooks/usePolling'; // <-- IMPORT HOOKA
+import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Briefcase } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling';
 
 const ZONES = [
     { id: 'receiving', label: 'Receiving' },
     { id: 'putaway', label: 'Putaway' },
     { id: 'picking', label: 'Picking' },
     { id: 'packing', label: 'Packing' },
-    { id: 'sorting', label: 'Sorting' }
+    { id: 'sorting', label: 'Sorting' },
+    { id: 'manager_tasks', label: 'Manager Tasks' }
 ];
 
 const WorkPlan = () => {
@@ -19,7 +20,7 @@ const WorkPlan = () => {
     
     const [pool, setPool] = useState([]);
     const [zones, setZones] = useState({
-        receiving: [], putaway: [], picking: [], packing: [], sorting: []
+        receiving: [], putaway: [], picking: [], packing: [], sorting: [], manager_tasks: []
     });
 
     const getBestSkill = (worker) => {
@@ -31,18 +32,16 @@ const WorkPlan = () => {
             { id: 'sorting', label: 'Sort', val: worker.sorting || 0 }
         ];
         const best = skills.reduce((prev, current) => (prev.val > current.val) ? prev : current);
-        return best.val > 0 ? best : { label: 'Newbie', val: 0 };
+        return best.val > 0 ? best : { label: 'New', val: 0 };
     };
 
-    // --- POBIERANIE GŁÓWNE (Z Loaderem) ---
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            console.log(`📡 Pobieram plan: Shift ${shift}, Data ${date}`);
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [] };
+            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], manager_tasks: [] };
             const newPool = [];
 
             if (allWorkers && Array.isArray(allWorkers)) {
@@ -68,7 +67,6 @@ const WorkPlan = () => {
 
     useEffect(() => { fetchData(); }, [date, shift]);
 
-    // --- CICHE ODŚWIEŻANIE W TLE (Live Presence) ---
     const fetchLiveUpdates = async () => {
         try {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
@@ -102,13 +100,12 @@ const WorkPlan = () => {
         }
     };
 
-    // Odpalamy ciche odświeżanie co 10 sekund (10000ms)
     usePolling(fetchLiveUpdates, 10000);
 
     const handlePresenceChange = async (workerLogin, currentStatus) => {
         const newStatus = !currentStatus; 
         try {
-            const response = await axios.post('http://127.0.0.1:8002/api/plan/update-presence', {
+            const response = await axios.post('/api/plan/update-presence', {
                 login: String(workerLogin),
                 is_present: newStatus
             });
@@ -123,8 +120,7 @@ const WorkPlan = () => {
                 });
             }
         } catch (error) {
-            console.error("❌ Błąd podczas zmiany obecności:", error);
-            alert("Nie udało się zaktualizować statusu obecności w bazie danych.");
+            console.error("❌ Błąd:", error);
         }
     };
 
@@ -205,57 +201,39 @@ const WorkPlan = () => {
             setIsDraft(false);
             alert("Plan został pomyślnie zapisany!");
         } catch (error) {
-            console.error("❌ Błąd zapisu:", error);
-            alert("Błąd zapisu! Sprawdź konsolę backendu.");
+            alert("Błąd zapisu! Sprawdź konsolę.");
         } finally {
             setIsLoading(false);
         }
     };
 
+    // --- MIKRO-KARTA PRACOWNIKA (Maksymalnie odchudzona) ---
     const WorkerCard = ({ worker, sourceZone }) => {
         const topSkill = getBestSkill(worker);
-        const nameToDisplay = worker.full_name?.toLowerCase() === 'pracownik' ? null : worker.full_name;
         const isPresent = !!worker.is_present;
         const presenceClasses = isPresent 
-            ? 'bg-emerald-50 border-emerald-300 text-emerald-900' 
-            : 'bg-rose-50 border-rose-300 text-rose-900';         
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-emerald-100/50' 
+            : 'bg-rose-50 border-rose-200 text-rose-900 opacity-70';         
 
         return (
             <div
                 draggable
                 onDragStart={(e) => handleDragStart(e, worker.worker_login, sourceZone)}
-                className={`p-3 rounded-xl border mb-2 cursor-grab active:cursor-grabbing shadow-sm transition-all hover:shadow-md ${presenceClasses}`}
+                className={`flex flex-col gap-0.5 p-1 rounded-md border cursor-grab active:cursor-grabbing shadow-sm hover:scale-105 transition-transform ${presenceClasses}`}
+                title={worker.full_name || 'Brak danych'}
             >
-                <div className="flex justify-between items-start mb-2">
-                    <div className="flex flex-col gap-1 w-full overflow-hidden">
-                        <span className="text-[14px] font-black tracking-tight leading-none uppercase">{worker.worker_login}</span>
-                        {nameToDisplay && (
-                            <span className="text-[9px] font-bold opacity-60 leading-none uppercase truncate" title={nameToDisplay}>{nameToDisplay}</span>
-                        )}
-                        <div className={`flex items-center w-fit gap-1 px-1.5 py-0.5 mt-1 rounded-md text-[8px] font-black uppercase tracking-tighter border ${topSkill.val >= 5 ? 'bg-amber-100/50 border-amber-300 text-amber-700' : 'bg-white/50 border-slate-300/50 text-slate-500'}`}>
-                            {topSkill.val >= 5 && <Award size={10} className="text-amber-500" />}
-                            {topSkill.label}: {topSkill.val}
-                        </div>
-                    </div>
-                    <div className="flex gap-0.5 pt-0.5 shrink-0">
-                        {[1, 2, 3, 4, 5, 6].map(i => (
-                            <div key={i} className={`w-1 h-3 rounded-full ${worker.picking >= i ? 'bg-indigo-500' : 'bg-black/10'}`} />
-                        ))}
-                    </div>
+                <div className="flex justify-between items-center w-full gap-0.5">
+                    <span className="text-[9px] font-black tracking-tighter truncate leading-none">{worker.worker_login}</span>
+                    <input 
+                        type="checkbox"
+                        checked={isPresent}
+                        onChange={() => handlePresenceChange(worker.worker_login, isPresent)}
+                        className="w-2 h-2 rounded cursor-pointer accent-emerald-600 shrink-0 border-slate-300 m-0"
+                        title="Obecność"
+                    />
                 </div>
-                <div className="flex items-center justify-between mt-2 pt-2 border-t border-black/10">
-                    <div className="flex items-center gap-1 text-[9px] font-bold opacity-70 uppercase">
-                        <Clock size={10} /> {worker.hours || '8h'}
-                    </div>
-                    <label className="text-[9px] font-black uppercase tracking-wider cursor-pointer flex items-center gap-1.5 opacity-80 hover:opacity-100 transition-opacity">
-                        <input 
-                            type="checkbox"
-                            checked={isPresent}
-                            onChange={() => handlePresenceChange(worker.worker_login, isPresent)}
-                            className="w-3.5 h-3.5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 cursor-pointer"
-                        />
-                        Na hali
-                    </label>
+                <div className={`text-[7px] font-black uppercase tracking-widest text-center rounded-[3px] py-[2px] leading-none ${topSkill.val >= 5 ? 'bg-amber-200/70 text-amber-900' : 'bg-white/60 text-slate-500'}`}>
+                    {topSkill.label} {topSkill.val}
                 </div>
             </div>
         );
@@ -264,14 +242,14 @@ const WorkPlan = () => {
     return (
         <div className="flex flex-col h-full bg-[#f8fafc] relative">
             {/* TOOLBAR */}
-            <div className="flex justify-between items-center p-6 bg-white border-b border-slate-200 shrink-0 shadow-sm z-10">
+            <div className="flex justify-between items-center px-4 py-3 bg-white border-b border-slate-200 shrink-0 shadow-sm z-10">
                 <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-2xl border border-slate-200 shadow-sm">
-                        <CalendarDays size={16} className="text-slate-400 ml-3" />
-                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent text-xs font-black p-2 outline-none text-slate-700 cursor-pointer" />
-                        <div className="w-px h-4 bg-slate-200 mx-2" />
-                        <Clock size={16} className="text-slate-400" />
-                        <select value={shift} onChange={(e) => setShift(e.target.value)} className="bg-transparent text-xs font-black p-2 outline-none cursor-pointer text-slate-700 uppercase">
+                    <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-sm">
+                        <CalendarDays size={14} className="text-slate-400 ml-2" />
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent text-xs font-black p-1.5 outline-none text-slate-700 cursor-pointer" />
+                        <div className="w-px h-4 bg-slate-200 mx-1" />
+                        <Clock size={14} className="text-slate-400" />
+                        <select value={shift} onChange={(e) => setShift(e.target.value)} className="bg-transparent text-xs font-black p-1.5 outline-none cursor-pointer text-slate-700 uppercase">
                             <option value="1">Shift I</option>
                             <option value="2">Shift II</option>
                             <option value="3">Shift III</option>
@@ -279,39 +257,49 @@ const WorkPlan = () => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-3">
-                    <button onClick={fetchData} className="p-2.5 text-slate-400 hover:bg-slate-50 rounded-xl transition-all">
-                        <RefreshCcw size={18} className={`${isLoading ? 'animate-spin' : ''}`} />
+                <div className="flex items-center gap-2">
+                    <button onClick={fetchData} className="p-2 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
+                        <RefreshCcw size={16} className={`${isLoading ? 'animate-spin' : ''}`} />
                     </button>
-                    <button onClick={handleAISuggestion} className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg hover:bg-indigo-600 transition-all hover:-translate-y-0.5">
-                        <Bot size={14} /> AI Suggestion
+                    <button onClick={handleAISuggestion} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md hover:bg-indigo-600 transition-all hover:-translate-y-0.5">
+                        <Bot size={12} /> AI Suggestion
                     </button>
-                    <button disabled={!isDraft} onClick={handleConfirm} className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg disabled:opacity-30 transition-all hover:bg-emerald-700 hover:-translate-y-0.5">
-                        <CheckCircle2 size={14} /> Confirm Plan
+                    <button disabled={!isDraft} onClick={handleConfirm} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md disabled:opacity-30 transition-all hover:bg-emerald-700 hover:-translate-y-0.5">
+                        <CheckCircle2 size={12} /> Confirm Plan
                     </button>
                 </div>
             </div>
 
-            {/* MAIN WORKSPACE */}
-            <div className="flex flex-1 overflow-hidden p-6 gap-6">
-                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-72 bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-[2.5rem] flex flex-col overflow-hidden shadow-inner shrink-0">
-                    <div className="p-5 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Unassigned Pool</span>
-                        <span className="bg-white text-slate-900 text-[10px] font-black px-3 py-1 rounded-full border border-slate-200 shadow-sm">{pool.length}</span>
+            {/* --- ZOPTYMALIZOWANY MAIN WORKSPACE (Brak Scrolla Poziomego) --- */}
+            <div className="flex flex-1 overflow-hidden p-3 gap-2">
+                
+                {/* POOL - Sztywno zabiera 15% szerokości */}
+                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-[16%] min-w-[140px] bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col overflow-hidden shadow-inner shrink-0">
+                    <div className="p-3 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
+                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest truncate">Unassigned</span>
+                        <span className="bg-white text-slate-900 text-[9px] font-black px-2 py-0.5 rounded-full border border-slate-200">{pool.length}</span>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                    {/* Zredukowane gappy, wymuszenie 3 kolumn */}
+                    <div className="flex-1 overflow-y-auto p-2 custom-scrollbar grid grid-cols-3 gap-1 content-start">
                         {pool.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone="pool" />)}
                     </div>
                 </div>
 
-                <div className="flex-1 flex gap-4 overflow-x-auto pb-4 custom-scrollbar">
+                {/* ZONES - Kontener, w którym strefy rygorystycznie dzielą się resztą miejsca */}
+                <div className="flex-1 flex gap-2 overflow-hidden">
                     {ZONES.map(zone => (
-                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-[2rem] flex flex-col min-w-[220px] max-w-[260px] flex-1 shadow-sm overflow-hidden hover:border-indigo-200 transition-all group">
-                            <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50 group-hover:bg-indigo-50/30 transition-colors">
-                                <h3 className="text-[10px] font-black text-slate-400 group-hover:text-indigo-600 uppercase tracking-widest transition-colors">{zone.label}</h3>
-                                <span className="text-[10px] font-black text-indigo-600 bg-white px-2 py-1 rounded-lg border border-indigo-100">{zones[zone.id]?.length || 0}</span>
+                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className={`bg-white border border-slate-200 rounded-2xl flex flex-col flex-1 min-w-0 shadow-sm overflow-hidden transition-all ${zone.id === 'manager_tasks' ? 'border-amber-200 bg-amber-50/10' : 'hover:border-indigo-200'}`}>
+                            
+                            <div className={`p-2.5 border-b border-slate-50 flex justify-between items-center transition-colors ${zone.id === 'manager_tasks' ? 'bg-amber-50/50' : 'bg-slate-50/50'}`}>
+                                <div className="flex items-center gap-1.5 truncate">
+                                    {zone.id === 'manager_tasks' && <Briefcase size={10} className="text-amber-500 shrink-0" />}
+                                    <h3 className={`text-[9px] font-black uppercase tracking-widest truncate ${zone.id === 'manager_tasks' ? 'text-amber-600' : 'text-slate-500'}`}>{zone.label}</h3>
+                                </div>
+                                <span className={`text-[9px] font-black bg-white px-1.5 py-0.5 rounded-md border shrink-0 ${zone.id === 'manager_tasks' ? 'text-amber-600 border-amber-200' : 'text-indigo-600 border-indigo-100'}`}>{zones[zone.id]?.length || 0}</span>
                             </div>
-                            <div className="flex-1 overflow-y-auto p-3 custom-scrollbar">
+                            
+                            {/* Wymuszone 3 kolumny dla strefy operacyjnej */}
+                            <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start">
                                 {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
                             </div>
                         </div>

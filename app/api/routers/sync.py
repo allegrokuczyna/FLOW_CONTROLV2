@@ -1,15 +1,48 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime
-from app.db.database import get_db, AsyncSessionLocal
+from app.db.database import get_db
 from app.db.models import User
-from app.api.deps import get_current_user, get_current_admin # <-- Dodano get_current_user
-from app.services.sync_service import process_full_push_sync, sync_works, sync_active_works, get_data, sync_template_module
+from app.api.deps import get_current_user, get_current_admin
+from app.services.sync_service import process_excel_master, sync_works, sync_active_works, get_data, sync_template_module
 
-router = APIRouter(prefix="/sync", tags=["Synchronizacja (D365 & GSheet)"])
+router = APIRouter(prefix="/sync", tags=["Synchronizacja (D365 & Excel)"])
 
-# Helper do wykonywania pełnej synchronizacji D365 z zapisem do bazy logów
+# ==============================================================================
+# 1. IMPORT DANYCH Z EXCELA (Zastępuje stare API Google Sheets)
+# ==============================================================================
+
+@router.post("/upload_excel")
+async def upload_excel_endpoint(
+    file: UploadFile = File(...), 
+    db: AsyncSession = Depends(get_db),
+    # current_user: User = Depends(get_current_user) # Opcjonalnie: odkomentuj, by zablokować dla niezalogowanych
+):
+    """Nowy endpoint do ładowania pliku Master Excel bezpośrednio z przeglądarki."""
+    print(f"📥 Odbieram plik: {file.filename}")
+    
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Wymagany format pliku to .xlsx lub .xls")
+        
+    try:
+        # Odczytujemy surowe bajty pliku (w pamięci RAM, bez zapisywania na dysku)
+        contents = await file.read()
+        
+        # Przekazujemy bajty do naszego potężnego silnika w sync_service.py
+        report = await process_excel_master(contents, db)
+        
+        return {"status": "success", "report": report}
+        
+    except Exception as e:
+        print(f"🔥 Błąd routera podczas uploadu: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Błąd przetwarzania pliku: {str(e)}")
+
+
+# ==============================================================================
+# 2. HELPER DO D365 ORAZ ZAPIS LOGÓW
+# ==============================================================================
+
 async def execute_d365_sync(db: AsyncSession, triggered_by: str):
     """Wspólna funkcja wykonująca synchronizację D365 i zapisująca audit trail."""
     try:
@@ -47,38 +80,22 @@ async def execute_d365_sync(db: AsyncSession, triggered_by: str):
             pass
         raise e
 
-async def background_sync_task(payload: dict):
-    """To zadanie odpali się w tle, po tym jak API odeśle 'OK' do Google Sheets."""
-    print("⏳ [ZADANIE W TLE] Rozpoczynam ciężką synchronizację danych z Google Sheets...")
-    async with AsyncSessionLocal() as db:
-        try:
-            await process_full_push_sync(payload, db)
-            print("✅ [ZADANIE W TLE] Synchronizacja PUSH zakończona pełnym sukcesem!")
-        except Exception as e:
-            print(f"❌ [ZADANIE W TLE] Krytyczny błąd: {str(e)}")
 
-# ╔════════════════════════════════════════════════════════════════════════╗
-# ║ 📥 FULL PUSH (WEBHOOK Z GOOGLE SHEETS)                                 ║
-# ╚════════════════════════════════════════════════════════════════════════╝
-@router.post("/full_push")
-async def trigger_full_push(payload: dict, background_tasks: BackgroundTasks):
-    """Odbiera potężną paczkę danych i od razu zwalnia Google Apps Script."""
-    try:
-        background_tasks.add_task(background_sync_task, payload)
-        return {"status": "success", "message": "Dane zostały przyjęte. Synchronizacja trwa w tle na serwerze."}
-    except Exception as e:
-        print(f"❌ Critical Sync Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Błąd uruchamiania zadania w tle: {str(e)}")
+# ==============================================================================
+# 3. ZINTEGROWANE ZARZĄDZANIE INTEGRACJĄ D365
+# ==============================================================================
 
-# ╔════════════════════════════════════════════════════════════════════════╗
-# ║ 🔄 ZINTEGROWANE ZARZĄDZANIE INTEGRACJĄ D365 (NOWE ENDPOINTY)            ║
-# ╚════════════════════════════════════════════════════════════════════════╝
 @router.post("/trigger")
 async def trigger_manual_d365_sync(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Ręczne wymuszenie pełnej synchronizacji D365 przez zalogowanego użytkownika."""
     try:
-        # Identyfikujemy użytkownika po imieniu lub loginie
-        user_label = current_user.full_name or current_user.login or "Kierownik"
+        # ZABEZPIECZENIE: getattr sprawdzi atrybut, a jeśli go nie ma, zwróci None zamiast wywalić błąd
+        user_label = (
+            getattr(current_user, 'full_name', None) or 
+            getattr(current_user, 'username', None) or 
+            getattr(current_user, 'login', None) or 
+            "Kierownik"
+        )
         await execute_d365_sync(db, triggered_by=user_label)
         return {"status": "success", "message": "Synchronizacja D365 zakończona sukcesem!"}
     except Exception as e:
@@ -107,7 +124,10 @@ async def get_d365_sync_status(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Starzy sub-endpointy zostają dla kompatybilności wstecznej
+# ==============================================================================
+# 4. ENDPOINTY NARZĘDZIOWE (Kompatybilność Wsteczna / Debug)
+# ==============================================================================
+
 @router.post("/works")
 async def trigger_sync_works(db: AsyncSession = Depends(get_db), _admin: User = Depends(get_current_admin)):
     try:
@@ -143,10 +163,8 @@ async def inspect_d365_fields():
     available_columns.sort()
     return {"status": "success", "total_columns": len(available_columns), "columns": available_columns, "sample_data": sample_record}
 
-
-
 @router.get("/inspect_d365_sales")
-async def inspect_d365_fields():
+async def inspect_d365_sales_fields(): # <--- Tutaj naprawiono konflikt nazw
     endpoint = "SalesOrderHeadersV4?cross-company=true&$top=1"
     works_data = await get_data(endpoint)
     if not works_data or len(works_data) == 0:

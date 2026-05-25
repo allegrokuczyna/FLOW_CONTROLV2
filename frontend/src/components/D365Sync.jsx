@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api'; // ZMIANA: Importujemy skonfigurowane zapytania sieciowe z tokenem (zamiast czystego axios)
 import { Database, RefreshCcw, ShieldCheck, Clock, User, AlertCircle, Cpu } from 'lucide-react';
 import { usePolling } from '../hooks/usePolling';
 
@@ -11,7 +11,8 @@ const D365Sync = () => {
     // Pobieranie logów z bazy danych
     const fetchSyncStatus = async () => {
         try {
-            const res = await axios.get('/api/sync/status');
+            // ZMIANA: używamy 'api', z adresu usunięte '/api' bo baseURL to załatwia
+            const res = await api.get('/sync/status');
             setSyncState(res.data);
         } catch (err) {
             console.error("Nie udało się pobrać statusu synchronizacji", err);
@@ -28,7 +29,8 @@ const D365Sync = () => {
         setIsSyncing(true);
         setMsg(null);
         try {
-            const res = await axios.post('/api/sync/trigger');
+            // ZMIANA: używamy 'api', z adresu usunięte '/api', TOKEN DOLĄCZA SIĘ SAM!
+            const res = await api.post('/sync/trigger');
             if (res.status === 200) {
                 setMsg({ type: 'success', text: 'Ręczna synchronizacja zakończona pełnym sukcesem!' });
                 fetchSyncStatus(); // Odśwież dane na ekranie od razu

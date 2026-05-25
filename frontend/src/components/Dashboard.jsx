@@ -1,27 +1,30 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { BarChart3, CalendarDays, RefreshCw, Box, Layers, X, Users, UserMinus } from 'lucide-react';
-import { usePolling } from '../hooks/usePolling'; // <-- Twój Hook
+import React, { useState, useEffect, useRef } from 'react';
+import api from '../api'; 
+import { BarChart3, CalendarDays, RefreshCw, Box, Layers, X, Users, UserMinus, Upload } from 'lucide-react';
+import { usePolling } from '../hooks/usePolling';
 
 const Dashboard = () => {
     const getTodayDate = () => new Date().toISOString().split('T')[0];
     
+    // --- NOWE STANY DO EXCELA ---
+    const fileInputRef = useRef(null); 
+    const [isUploading, setIsUploading] = useState(false); 
+
     const [date, setDate] = useState(getTodayDate());
     const [hourlyData, setHourlyData] = useState([]);
     const [activeWorkers, setActiveWorkers] = useState(0); 
-    const [inactiveWorkers, setInactiveWorkers] = useState(0); // <-- STAN DLA NIEOBECNYCH
+    const [inactiveWorkers, setInactiveWorkers] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [activeModal, setActiveModal] = useState(null);
 
-    // Główne pobieranie z widocznym loaderem (wywoływane np. przy zmianie daty)
     const fetchDashboardData = async () => {
         setIsLoading(true);
         try {
-            // Dodano trzeci endpoint do jednoczesnego pobierania!
+            // Zmiana: axios.get -> api.get. Usunięto `/api` z początku URL, bo masz je już w baseURL w api.js
             const [forecastRes, activeRes, inactiveRes] = await Promise.all([
-                axios.get(`/api/analytics/forecast/hourly?target_date=${date}`).catch(() => ({ data: [] })),
-                axios.get(`/api/plan/active-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } })),
-                axios.get(`/api/plan/inactive-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } }))
+                api.get(`/analytics/forecast/hourly?target_date=${date}`).catch(() => ({ data: [] })),
+                api.get(`/plan/active-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } })),
+                api.get(`/plan/inactive-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } }))
             ]);
             
             setHourlyData(forecastRes.data || []);
@@ -34,13 +37,12 @@ const Dashboard = () => {
         }
     };
 
-    // Ciche pobieranie w tle (bez migania loadera)
     const fetchDashboardSilent = async () => {
         try {
             const [forecastRes, activeRes, inactiveRes] = await Promise.all([
-                axios.get(`/api/analytics/forecast/hourly?target_date=${date}`),
-                axios.get(`/api/plan/active-workers?target_date=${date}`),
-                axios.get(`/api/plan/inactive-workers?target_date=${date}`)
+                api.get(`/analytics/forecast/hourly?target_date=${date}`),
+                api.get(`/plan/active-workers?target_date=${date}`),
+                api.get(`/plan/inactive-workers?target_date=${date}`)
             ]);
             
             setHourlyData(forecastRes.data || []);
@@ -55,8 +57,44 @@ const Dashboard = () => {
         fetchDashboardData();
     }, [date]);
 
-    // Odświeża cały dashboard w tle co 15 sekund
     usePolling(fetchDashboardSilent, 15000);
+
+    // =========================================================================
+    // OBSŁUGA IMPORTU EXCELA
+    // =========================================================================
+    const handleExcelUpload = async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        setIsUploading(true);
+        try {
+            const response = await api.post('/sync/upload_excel', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            
+            if (response.data.status === 'success') {
+                const rep = response.data.report;
+                // Teraz alert pokaże PRAWDE o tym, co zrobiono
+                alert(
+                    `📊 Raport z serwera:\n\n` +
+                    `📅 Grafik: ${rep.schedule || 'Brak danych / Błąd'}\n` +
+                    `📦 Forecast: ${rep.forecast || ''}\n` +
+                    `👥 Matryca: ${rep.matrix || ''}\n` +
+                    `${rep.forecast_matrix ? '🔥 Błąd GŁÓWNY: ' + rep.forecast_matrix : ''}`
+                );
+                fetchDashboardData(); 
+            }
+        } catch (error) {
+            console.error("❌ Błąd uploadu:", error);
+            alert("Błąd podczas ładowania pliku Excel: " + (error.response?.data?.detail || error.message));
+        } finally {
+            setIsUploading(false);
+            event.target.value = ''; 
+        }
+    };
 
     const total1F = hourlyData.reduce((sum, h) => sum + h.yf, 0);
     const total1P = hourlyData.reduce((sum, h) => sum + h.yp, 0);
@@ -69,16 +107,36 @@ const Dashboard = () => {
             <div className="flex justify-between items-center bg-[#1e2433] rounded-xl p-3 shadow-sm text-white">
                 <div className="flex items-center gap-3">
                     <BarChart3 className="text-indigo-400" size={18} />
-                    <h2 className="text-xs font-black uppercase tracking-widest">Magazyn Live Dashboard</h2>
+                    <h2 className="text-xs font-black uppercase tracking-widest hidden sm:block">Magazyn Live Dashboard</h2>
                 </div>
                 <div className="flex items-center gap-3">
+                    
+                    {/* --- NOWY PRZYCISK IMPORTU EXCELA --- */}
+                    <input 
+                        type="file" 
+                        ref={fileInputRef} 
+                        onChange={handleExcelUpload} 
+                        accept=".xlsx, .xls" 
+                        className="hidden" 
+                    />
+                    <button 
+                        onClick={() => fileInputRef.current.click()} 
+                        disabled={isUploading}
+                        className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors shadow-sm disabled:opacity-50"
+                        title="Wgraj plik Master Excel"
+                    >
+                        {isUploading ? <RefreshCw size={14} className="animate-spin" /> : <Upload size={14} />}
+                        <span className="hidden md:inline">{isUploading ? 'Wgrywanie...' : 'Import Master Excel'}</span>
+                    </button>
+
+                    {/* WIDŻET DATY */}
                     <div className="flex items-center bg-[#151923] p-1 rounded-lg border border-slate-700">
                         <CalendarDays size={14} className="text-indigo-400 ml-2" />
                         <input 
                             type="date" 
                             value={date} 
                             onChange={e => setDate(e.target.value)} 
-                            className="bg-transparent text-[10px] font-black px-2 py-1 outline-none text-slate-300 [color-scheme:dark]" 
+                            className="bg-transparent text-[10px] font-black px-2 py-1 outline-none text-slate-300 [color-scheme:dark] cursor-pointer" 
                         />
                     </div>
                     <button onClick={fetchDashboardData} className="p-2 hover:bg-slate-700 rounded-lg transition-colors" title="Odśwież dane">
@@ -108,7 +166,6 @@ const Dashboard = () => {
                         </span>
                         <span>Aktualizowane z bramek</span>
                     </div>
-                    {/* Ozdobne tło ikony w rogu */}
                     <Users size={140} className="absolute -bottom-8 -right-8 text-white opacity-10 group-hover:scale-110 transition-transform duration-700" />
                 </div>
 
@@ -130,7 +187,6 @@ const Dashboard = () => {
                         </span>
                         <span>Z zaplanowanych na dziś</span>
                     </div>
-                    {/* Ozdobne tło ikony w rogu */}
                     <UserMinus size={140} className="absolute -bottom-8 -right-8 text-white opacity-10 group-hover:scale-110 transition-transform duration-700" />
                 </div>
 
