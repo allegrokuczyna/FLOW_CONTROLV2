@@ -165,7 +165,7 @@ async def inspect_d365_fields():
 
 @router.get("/inspect_d365_sales")
 async def inspect_d365_sales_fields(): # <--- Tutaj naprawiono konflikt nazw
-    endpoint = "SalesOrderHeadersV4?cross-company=true&$top=1"
+    endpoint = "SalesOrderLinesV3?cross-company=true&$top=1"
     works_data = await get_data(endpoint)
     if not works_data or len(works_data) == 0:
         return {"status": "error", "message": "Nie udało się pobrać żadnych danych z D365."}

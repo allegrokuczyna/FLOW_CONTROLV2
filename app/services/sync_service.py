@@ -560,38 +560,87 @@ async def get_workpool_analytics(db: AsyncSession):
     return stats
 
 async def sync_template_module(db: AsyncSession):
-    """Szablon importu danych z D365"""
-    endpoint = f"SalesOrderHeadersV4?cross-company=true&top=500"
+    """Szablon importu danych z D365 - TRYB GŁĘBOKIEGO DEBUGOWANIA"""
+    import httpx
+    from app.core.auth import get_d365_access_token
+    from app.core.config import settings
+
+    print("\n" + "="*50)
+    print("🕵️‍♂️ START DEBUGOWANIA: sync_template_module")
+    
+    # ZMIANA: Dodany zamykający apostrof po ADM-01
+    endpoint = "SalesOrderHeadersV4?cross-company=true&$filter=DefaultShippingWarehouseId eq 'ADM-01'&$OrderCreationDateTime lt 2026-04-01T00:00:00Z"
+    print(f"📍 1. Zbudowany endpoint: {endpoint}")
     
     try:
-        raw_data = await get_data(endpoint)
-        if not raw_data:
-            return
-
-        to_insert = []
-        for item in raw_data:
-            to_insert.append({
-                "salesorderlinecreationmethod": item.get("SalesOrderLineCreationMethod") or "UNKNOWN",
-                "sourceordernumber": item.get("SourceOrderNumber", ""),
-                "deliverymodecode": item.get("DeliveryModeCode", ""),
-                "requestedshippingdate": item.get("RequestedShippingDate", ""),
-                "orderedsalesquantity": float(item.get("OrderedSalesQuantity") or 0.0),
-                "itemnumber": item.get("ItemNumber", ""),
-                "salesorderprocessingstatus": item.get("SalesOrderProcessingStatus", ""),
-                "ordercreationdatetime": item.get("OrderCreationDateTime", "")
-            })
+        # Pobieranie tokena
+        token = await get_d365_access_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        base_url = str(settings.D365_URL).strip('/')
+        url = f"{base_url}/data/{endpoint}"
+        
+        print(f"🔗 2. Pełny adres URL: {url}")
+        
+        # Ręczny strzał do D365, żeby złapać błąd
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(url, headers=headers)
             
-        if len(to_insert) > 0:
-            TargetModel = SalesTable 
-            await db.execute(delete(TargetModel))
+            print(f"📡 3. Status HTTP od D365: {response.status_code}")
             
-            chunk_size = 1000
-            for i in range(0, len(to_insert), chunk_size):
-                chunk = to_insert[i:i + chunk_size]
-                await db.execute(insert(TargetModel), chunk)
+            if response.status_code != 200:
+                print(f"❌ 4. KRYTYCZNY BŁĄD D365! Odpowiedź serwera:\n{response.text}")
+                print("="*50 + "\n")
+                return
                 
-            await db.commit()
+            res_json = response.json()
+            raw_data = res_json.get("value", [])
+            
+            print(f"📦 5. Pobrano rekordów: {len(raw_data)}")
+            
+            if not raw_data:
+                print("⚠️ D365 zwróciło PUSTĄ LISTĘ. Zapytanie jest poprawne technicznie, ale ZADEN rekord nie spełnia warunku z $filter.")
+                print("="*50 + "\n")
+                return
+
+            print(f"🔍 6. Klucze pierwszego pobranego rekordu:\n{list(raw_data[0].keys())}")
+            print(f"📄 7. Wartość OrderCreationDateTime dla tego rekordu: {raw_data[0].get('OrderCreationDateTime')}")
+
+            # --- Dalsza część zapisująca do bazy ---
+            def safe_date(date_str):
+                if not date_str or str(date_str).startswith("1900"): 
+                    return None
+                try:
+                    return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+                except Exception:
+                    return None
+
+            to_insert = []
+            for item in raw_data:
+                to_insert.append({
+                    "salesorderlinecreationmethod": item.get("SalesOrderLineCreationMethod") or "UNKNOWN",
+                    "sourceordernumber": item.get("SalesOrderNumber") or item.get("SalesOrderNumber", ""),
+                    "deliverymodecode": item.get("ShippingCarrierId", ""),
+                    "requestedshippingdate": safe_date(item.get("RequestedShippingDate")),
+                    "orderedsalesquantity": float(item.get("OrderedSalesQuantity") or 0.0),
+                    "itemnumber": item.get("ItemNumber", ""),
+                    "salesorderprocessingstatus": item.get("SalesOrderStatus", ""),
+                    "ordercreationdatetime": safe_date(item.get("OrderCreationDateTime"))
+                })
+                
+            if len(to_insert) > 0:
+                TargetModel = SalesTable 
+                await db.execute(delete(TargetModel))
+                
+                chunk_size = 1000
+                for i in range(0, len(to_insert), chunk_size):
+                    chunk = to_insert[i:i + chunk_size]
+                    await db.execute(insert(TargetModel), chunk)
+                    
+                await db.commit()
+                print(f"✅ 8. SYNC TEMPLATE ZAKOŃCZONY: Zapisano {len(to_insert)} nagłówków zamówień!")
+                print("="*50 + "\n")
 
     except Exception as e:
         await db.rollback() 
-        print(f"🔥 BŁĄD SYNC TEMPLATE: {str(e)}")
+        print(f"🔥 BŁĄD KODU PYTHON W SYNC TEMPLATE: {str(e)}")
+        print("="*50 + "\n")
