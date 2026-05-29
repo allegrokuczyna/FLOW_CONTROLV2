@@ -93,7 +93,7 @@ const TVBoard = () => {
       <div className="flex justify-between items-center mb-12 border-b-2 border-slate-200/70 pb-8">
         <div>
           <h1 className="text-6xl font-black tracking-tighter text-slate-800">Here We GO! pysiaczku</h1>
-          <p className="text-xl font-bold text-slate-400 mt-2 uppercase tracking-widest">Ostatnie skanowania na bramkach</p>
+          <p className="text-xl font-bold text-slate-400 mt-2 uppercase tracking-widest">Magazyn ADM-01</p>
         </div>
         <div className="bg-white px-8 py-4 rounded-3xl shadow-sm border border-slate-100">
           <DigitalClock time={time} />
