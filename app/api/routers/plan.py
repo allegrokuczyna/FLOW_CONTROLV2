@@ -79,14 +79,15 @@ async def get_tv_board_data(target_date: date = None, db: AsyncSession = Depends
     response_data = []
     for schedule_obj, assignment_obj in rows:
         
-        
         assigned_task = assignment_obj.task if assignment_obj else "unassigned"
         
         response_data.append({
             "login": schedule_obj.login,
             "full_name": schedule_obj.full_name or "Pracownik",
             "task": assigned_task,
-            "shift": schedule_obj.planned_shift
+            "shift": schedule_obj.planned_shift,
+            # ZMIANA: Dodajemy informację o bramce (jeśli brak w bazie, dajemy 1)
+            "gate": getattr(schedule_obj, 'gate', 1)
         })
         
     return response_data

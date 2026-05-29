@@ -1,6 +1,10 @@
+/* =========================================
+   MOTYW: JASNY KREMOWY (Light & Clean)
+   ========================================= */
+
 .tv-board-container {
-  background-color: #09090b; /* Głęboka czerń */
-  color: #ffffff;
+  background-color: #fdfbf7; /* Delikatny, bardzo jasny kremowy */
+  color: #1e293b; /* Ciemny, elegancki grafit */
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   height: 100vh;
   padding: 30px 40px;
@@ -13,23 +17,23 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 2px solid #27272a;
+  border-bottom: 2px solid #e2e8f0; /* Jasnoszara linia */
   padding-bottom: 15px;
   margin-bottom: 30px;
 }
 
 .tv-title {
-  font-size: 2.2rem;
+  font-size: 2.5rem;
   font-weight: 900;
   margin: 0;
-  color: #a855f7;
+  color: #1e293b;
   letter-spacing: 2px;
 }
 
 .tv-clock {
   font-size: 2.5rem;
   font-weight: 900;
-  color: #ffffff;
+  color: #1e293b;
   letter-spacing: 3px;
 }
 
@@ -38,10 +42,11 @@
   display: grid;
   grid-template-columns: 1fr 1fr 1fr; /* Równo 3 kolumny */
   flex: 1;
-  background-color: #121214;
-  border-radius: 16px;
-  border: 2px solid #27272a;
-  overflow: hidden; /* żeby zaokrąglenia działały */
+  background-color: #ffffff; /* Czysta biel dla kafelków */
+  border-radius: 24px;
+  border: 1px solid #f1f5f9;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01); /* Bardzo miękki, nowoczesny cień */
+  overflow: hidden; 
 }
 
 .tv-gate {
@@ -50,18 +55,30 @@
   align-items: center;
   padding: 40px 20px;
   text-align: center;
+  position: relative;
 }
 
-/* Gruba linia oddzielająca bramki */
+/* Niebieski pasek na górze każdej bramki (akcent) */
+.tv-gate::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 8px;
+  background-color: #4f46e5; /* Indygowy akcent */
+}
+
+/* Jasnoszara linia oddzielająca bramki */
 .tv-border-right {
-  border-right: 4px solid #27272a;
+  border-right: 2px solid #f1f5f9;
 }
 
 /* Nagłówek bramki (BRAMKA 1, BRAMKA 2...) */
 .tv-gate-title {
   font-size: 3rem;
   font-weight: 900;
-  color: #52525b;
+  color: #94a3b8; /* Bardziej stonowany szary na jasnym tle */
   margin: 0 0 50px 0;
   letter-spacing: 4px;
 }
@@ -78,32 +95,33 @@
 
 /* Ogromny Login */
 .tv-login {
-  font-size: 6rem; /* Ekstremalnie duży */
+  font-size: 6.5rem; /* Ekstremalnie duży */
   font-weight: 900;
-  color: #f4f4f5;
+  color: #0f172a; /* Głęboki grafit */
   margin: 0;
-  letter-spacing: 2px;
+  letter-spacing: -2px;
 }
 
 /* Strefa / Zadanie */
 .tv-task {
-  font-size: 4.5rem;
+  font-size: 3.5rem;
   font-weight: 900;
-  color: #10b981; /* Jaskrawy zielony */
+  color: #047857; /* Szmaragdowy ciemny */
   margin: 0;
   text-transform: uppercase;
-  background-color: rgba(16, 185, 129, 0.1);
-  padding: 10px 30px;
-  border-radius: 12px;
-  border: 2px solid #10b981;
+  background-color: #ecfdf5; /* Jasny szmaragdowy tło */
+  padding: 15px 40px;
+  border-radius: 100px;
+  border: 2px solid #a7f3d0;
+  box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.1);
 }
 
 /* Czerwony kolor, gdy brak strefy */
 .tv-task.unassigned {
-  color: #ef4444;
-  background-color: rgba(239, 68, 68, 0.1);
-  border-color: #ef4444;
-  animation: pulse-alert 2s infinite;
+  color: #be123c; /* Ciemna róża */
+  background-color: #fff1f2; /* Bardzo jasne czerwone tło */
+  border-color: #fecdd3;
+  animation: pulse-alert-light 2s infinite;
 }
 
 /* Gdy slot jest pusty */
@@ -113,34 +131,29 @@
   justify-content: center;
   align-items: center;
   flex: 1;
+  opacity: 0.5;
 }
 
 .tv-worker-empty p {
-  font-size: 4rem;
+  font-size: 6rem;
   font-weight: 900;
-  color: #27272a;
-}
-
-.tv-pagination {
-  text-align: center;
-  font-size: 1.8rem;
-  color: #71717a;
-  margin-top: 20px;
-  font-weight: bold;
+  color: #cbd5e1; /* Bardzo jasny, niewidoczny prawie szary */
+  margin: 0;
 }
 
 /* Animacje wejścia */
 .animate-fade {
-  animation: fade-in 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: fade-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes fade-in {
-  0% { opacity: 0; transform: scale(0.98); }
-  100% { opacity: 1; transform: scale(1); }
+  0% { opacity: 0; transform: scale(0.95) translateY(10px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-@keyframes pulse-alert {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  50% { transform: scale(1.05); box-shadow: 0 0 20px 10px rgba(239, 68, 68, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+/* Delikatniejsze pulsowanie dostosowane do jasnego tła */
+@keyframes pulse-alert-light {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.3); }
+  50% { transform: scale(1.02); box-shadow: 0 0 25px 10px rgba(225, 29, 72, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(225, 29, 72, 0); }
 }

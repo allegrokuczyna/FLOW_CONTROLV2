@@ -21,19 +21,16 @@ SSRS_USERNAME = os.getenv("SSRS_USERNAME")
 SSRS_PASSWORD = os.getenv("SSRS_PASSWORD")
 REPORT_URL = "https://poz-sql-111.allegrogroup.internal/ReportServer?/rogvisio/we-wy%20magazyn%20adamow&rs:Command=Render&rs:Format=CSV"
 
-
-
 async def poll_gates_and_update(db: AsyncSession):
     print("🚀 [BRAMKA] Uruchamiam Agenta SSRS dla 'wejscie-magazyn'...")
 
     if not SSRS_USERNAME or not SSRS_PASSWORD:
-        print("❌ [BRAMKA] Brak SSRS_USERNAME lub SSRS_PASSWORD w .env! Agent zasypia.")
+        print("❌ [BRAMKA] Brak SSRS_USERNAME lub Password Agent zasypia.")
         while True:
             await asyncio.sleep(3600)
 
     auth = HttpNtlmAuth(SSRS_USERNAME, SSRS_PASSWORD)
     
-  
     last_check_time = pd.Timestamp.now()
 
     while True:
@@ -42,6 +39,10 @@ async def poll_gates_and_update(db: AsyncSession):
             
             if response.status_code == 200:
                 df = pd.read_csv(io.StringIO(response.text))
+                
+                # ZABEZPIECZENIE 1: Usuwamy niewidoczne spacje z nazw kolumn
+                df.columns = df.columns.str.strip()
+                
                 df = df.dropna(subset=['PersonNumber', 'LoggedOn'])
                 df['LoggedOn'] = pd.to_datetime(df['LoggedOn'], format='%m/%d/%Y %I:%M:%S %p')
                 
@@ -61,15 +62,40 @@ async def poll_gates_and_update(db: AsyncSession):
                         # Jeśli ostatnie odbicie to wejście -> True, w każdym innym wypadku (np. wyjscie) -> False
                         is_present = bool(row['LocationID'] == 'wejscie-magazyn')
                         
+                        # --- KULOODPORNA LOGIKA ROZPOZNAWANIA BRAMEK ---
+                        # ZMIANA: Szukamy kolumny 'Reader_Name' (z podkreślnikiem)
+                        reader_name = str(row.get('Reader_Name', '')).strip().upper()
+                        gate = 1  # Domyślny fallback w razie totalnego braku dopasowania
+                        
+                        if is_present:
+                            # Szukamy tylko kluczowych fragmentów
+                            if 'P1' in reader_name:
+                                gate = 1
+                            elif 'P2' in reader_name:
+                                gate = 2
+                            elif 'P3' in reader_name:
+                                gate = 3
+                            
+                            # DEBUG do terminala
+                            print(f"🔍 DEBUG ODBICIA: Login {worker_login} -> Czytnik: '{reader_name}' -> Przypisano BRAMKĘ: {gate}")
+                        else:
+                            gate = None  # Reset przy wyjściu
+                        
                         update_stmt = text("""
                             UPDATE schedules 
-                            SET is_present = :is_present 
+                            SET is_present = :is_present,
+                                gate = :gate
                             WHERE login = :login AND work_date = CURRENT_DATE
                         """)
-                        await db.execute(update_stmt, {"is_present": is_present, "login": worker_login})
+                        
+                        await db.execute(update_stmt, {
+                            "is_present": is_present, 
+                            "gate": gate, 
+                            "login": worker_login
+                        })
                     
                     await db.commit()
-                    print(f"✅ [BRAMKA] Zaktualizowano statusy w bazie (Wejścia/Wyjścia).")
+                    print(f"✅ [BRAMKA] Zaktualizowano statusy oraz numery bramek w bazie.")
                     
                     last_check_time = new_entries['LoggedOn'].max()
 

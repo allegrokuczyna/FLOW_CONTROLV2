@@ -60,6 +60,7 @@ class Schedule(Base):
     planned_shift = Column(String(50))
     is_present = Column(Boolean, default=False)
     group_prefix = Column(String, nullable=True) #prefiks z przypisaniem do dzialu O = Operacja.
+    gate = Column(Integer, nullable=True) #bramka, na której odbił się pracownik
     
     # To jest kluczowe dla funkcji "upsert" (żeby się nie duplikowało przy ponownym pobraniu)
     __table_args__ = (UniqueConstraint('login', 'work_date', name='uix_login_date'),)
