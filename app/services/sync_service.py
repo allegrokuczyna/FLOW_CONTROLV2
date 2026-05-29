@@ -569,7 +569,7 @@ async def sync_template_module(db: AsyncSession):
     print("🕵️‍♂️ START DEBUGOWANIA: sync_template_module")
     
     # ZMIANA: Dodany zamykający apostrof po ADM-01
-    endpoint = "SalesOrderHeadersV4?cross-company=true&$filter=DefaultShippingWarehouseId eq 'ADM-01'&$OrderCreationDateTime lt 2026-04-01T00:00:00Z"
+    endpoint = "SalesOrderHeadersV3?cross-company=true&$filter=ShippingWarehouseId eq 'ADM-01'&$top=500"
     print(f"📍 1. Zbudowany endpoint: {endpoint}")
     
     try:
