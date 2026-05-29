@@ -72,6 +72,19 @@ async def get_replenishment_open_works(db: AsyncSession):
     result = await db.execute(stmt)
     return result.scalars().all()
 
+
+
+
+async def get_sorting_open_works(db: AsyncSession):
+    """pobieranie otwartych prac sortowania"""
+    target_pools = ['PackedContainerPicking']
+
+    stmt = (
+        select(ActiveWork).filter(ActiveWork.worktranstype == 'PackedContainerPicking', ActiveWork.workstatus == 'Open')
+    )
+
+    result = await db.execute(stmt)
+    return result.scalars().all()
  
 # ==============================================================================
 # SEKCJA: PROGNOZY I PLANOWANIE (FORECAST)

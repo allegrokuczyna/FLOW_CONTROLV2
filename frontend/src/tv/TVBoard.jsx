@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api'; 
-import './TVBoard.css'; // Możesz zostawić, jeśli masz tam jakieś własne style bazowe
+import './TVBoard.css';
+
+
+
 
 // ---------------------------------------------------------
 // Komponent: Zegar Cyfrowy (Wersja Jasna)
