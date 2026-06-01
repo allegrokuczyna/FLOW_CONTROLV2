@@ -103,11 +103,12 @@ async def get_active_inbound_works(db: AsyncSession):
 
 
 
-async def get_zone_pick_open_works(db: AsyncSession):
+async def get_zone_pick_open_works_1M1B2(db: AsyncSession):
     stmt = (
         select(ActiveWork).filter(
             ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open"
+            ActiveWork.workstatus == "Open",
+            ActiveWork.whaadditionalzone2 == "MEZZ-1M1B2"
         )
     )
     result = await db.execute(stmt)

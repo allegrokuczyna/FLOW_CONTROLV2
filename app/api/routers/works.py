@@ -10,7 +10,7 @@ from app.db.queries import (
     get_replenishment_open_works,
     get_sorting_open_works,
     get_active_inbound_works,
-    get_zone_pick_open_works,
+    get_zone_pick_open_works_1M1B2,
     get_multi_zone_pick_open_works
 )
 
@@ -65,11 +65,11 @@ async def get_open_inbound_works(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/zonepick/open")
+@router.get("/zonepick/open-1M1B2")
 async def get_open_zone_pick_works(db: AsyncSession = Depends(get_db)):
     """pobieranie otwartych prac zone picking"""
     try:
-        works = await get_zone_pick_open_works(db)
+        works = await get_zone_pick_open_works_1M1B2(db)
         return {"status": "success", "total_count": len(works), "data": jsonable_encoder(works)}
 
     except Exception as e:

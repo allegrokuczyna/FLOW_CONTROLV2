@@ -3,13 +3,33 @@ import axios from 'axios';
 import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Briefcase } from 'lucide-react';
 import { usePolling } from '../hooks/usePolling';
 
+// ZMIANA: Zaktualizowana struktura ZONES o nową grupę zadań menadżerskich
 const ZONES = [
     { id: 'receiving', label: 'Receiving' },
     { id: 'putaway', label: 'Putaway' },
-    { id: 'picking', label: 'Picking' },
+    { 
+        id: 'picking_group', 
+        label: 'Picking', 
+        subZones: [
+            { id: 'picking_mezz_m0', label: 'MEZZ M0' },
+            { id: 'picking_mezz_m1', label: 'MEZZ M1' },
+            { id: 'picking_mezz_m2', label: 'MEZZ M2' },
+            { id: 'picking_rack', label: 'RACK' }
+        ]
+    },
     { id: 'packing', label: 'Packing' },
     { id: 'sorting', label: 'Sorting' },
-    { id: 'manager_tasks', label: 'Manager Tasks' }
+    { 
+        id: 'manager_group', 
+        label: 'Manager Tasks',
+        subZones: [
+            { id: 'task_cleaning', label: 'Sprzątanie' },
+            { id: 'task_filler', label: 'Wypełniacz' },
+            { id: 'task_waterspider', label: 'Water-spider' },
+            { id: 'task_training', label: 'Szkolenie' },
+            { id: 'task_relocation', label: 'Relokacja' }
+        ]
+    }
 ];
 
 const WorkPlan = () => {
@@ -19,8 +39,12 @@ const WorkPlan = () => {
     const [isDraft, setIsDraft] = useState(false);
     
     const [pool, setPool] = useState([]);
+    
+    // ZMIANA: Zaktualizowany stan początkowy o 5 nowych stref i usunięto starą
     const [zones, setZones] = useState({
-        receiving: [], putaway: [], picking: [], packing: [], sorting: [], manager_tasks: []
+        receiving: [], putaway: [], packing: [], sorting: [], 
+        picking_mezz_m0: [], picking_mezz_m1: [], picking_mezz_m2: [], picking_rack: [],
+        task_cleaning: [], task_filler: [], task_waterspider: [], task_training: [], task_relocation: []
     });
 
     const getBestSkill = (worker) => {
@@ -41,13 +65,22 @@ const WorkPlan = () => {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
-            const newZones = { receiving: [], putaway: [], picking: [], packing: [], sorting: [], manager_tasks: [] };
+            const newZones = { 
+                receiving: [], putaway: [], packing: [], sorting: [], 
+                picking_mezz_m0: [], picking_mezz_m1: [], picking_mezz_m2: [], picking_rack: [],
+                task_cleaning: [], task_filler: [], task_waterspider: [], task_training: [], task_relocation: []
+            };
             const newPool = [];
 
             if (allWorkers && Array.isArray(allWorkers)) {
                 allWorkers.forEach(worker => {
-                    const currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
-                    if (currentTask !== 'unassigned' && newZones[currentTask]) {
+                    let currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
+                    
+                    // Bezpieczna migracja starych rekordów
+                    if (currentTask === 'picking') currentTask = 'picking_mezz_m0';
+                    if (currentTask === 'manager_tasks') currentTask = 'task_cleaning';
+
+                    if (currentTask !== 'unassigned' && newZones[currentTask] !== undefined) {
                         newZones[currentTask].push(worker);
                     } else {
                         newPool.push(worker);
@@ -166,8 +199,17 @@ const WorkPlan = () => {
             const newPool = [];
 
             pool.forEach(w => {
-                const suggestedTask = suggestions[String(w.worker_login)];
-                if (suggestedTask && newZones[suggestedTask]) {
+                let suggestedTask = suggestions[String(w.worker_login)];
+                
+                // Migracja AI
+                if (suggestedTask && suggestedTask.toLowerCase().trim() === 'picking') {
+                    suggestedTask = 'picking_mezz_m0';
+                }
+                if (suggestedTask && suggestedTask.toLowerCase().trim() === 'manager_tasks') {
+                    suggestedTask = 'task_cleaning';
+                }
+
+                if (suggestedTask && newZones[suggestedTask] !== undefined) {
                     newZones[suggestedTask] = [...newZones[suggestedTask], { ...w, task: suggestedTask }];
                 } else {
                     newPool.push(w);
@@ -207,7 +249,7 @@ const WorkPlan = () => {
         }
     };
 
-    // --- MIKRO-KARTA PRACOWNIKA (Maksymalnie odchudzona) ---
+    // --- MIKRO-KARTA PRACOWNIKA ---
     const WorkerCard = ({ worker, sourceZone }) => {
         const topSkill = getBestSkill(worker);
         const isPresent = !!worker.is_present;
@@ -270,40 +312,82 @@ const WorkPlan = () => {
                 </div>
             </div>
 
-            {/* --- ZOPTYMALIZOWANY MAIN WORKSPACE (Brak Scrolla Poziomego) --- */}
+            {/* MAIN WORKSPACE */}
             <div className="flex flex-1 overflow-hidden p-3 gap-2">
                 
-                {/* POOL - Sztywno zabiera 15% szerokości */}
+                {/* POOL */}
                 <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-[16%] min-w-[140px] bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col overflow-hidden shadow-inner shrink-0">
                     <div className="p-3 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
                         <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest truncate">Unassigned</span>
                         <span className="bg-white text-slate-900 text-[9px] font-black px-2 py-0.5 rounded-full border border-slate-200">{pool.length}</span>
                     </div>
-                    {/* Zredukowane gappy, wymuszenie 3 kolumn */}
                     <div className="flex-1 overflow-y-auto p-2 custom-scrollbar grid grid-cols-3 gap-1 content-start">
                         {pool.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone="pool" />)}
                     </div>
                 </div>
 
-                {/* ZONES - Kontener, w którym strefy rygorystycznie dzielą się resztą miejsca */}
+                {/* ZONES */}
                 <div className="flex-1 flex gap-2 overflow-hidden">
-                    {ZONES.map(zone => (
-                        <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className={`bg-white border border-slate-200 rounded-2xl flex flex-col flex-1 min-w-0 shadow-sm overflow-hidden transition-all ${zone.id === 'manager_tasks' ? 'border-amber-200 bg-amber-50/10' : 'hover:border-indigo-200'}`}>
+                    {ZONES.map(zone => {
+                        
+                        // Renderowanie GRUP z kolumnami (np. Picking lub Manager Tasks)
+                        if (zone.subZones) {
+                            const totalWorkersInGroup = zone.subZones.reduce((sum, sz) => sum + (zones[sz.id]?.length || 0), 0);
                             
-                            <div className={`p-2.5 border-b border-slate-50 flex justify-between items-center transition-colors ${zone.id === 'manager_tasks' ? 'bg-amber-50/50' : 'bg-slate-50/50'}`}>
-                                <div className="flex items-center gap-1.5 truncate">
-                                    {zone.id === 'manager_tasks' && <Briefcase size={10} className="text-amber-500 shrink-0" />}
-                                    <h3 className={`text-[9px] font-black uppercase tracking-widest truncate ${zone.id === 'manager_tasks' ? 'text-amber-600' : 'text-slate-500'}`}>{zone.label}</h3>
+                            // Dynamiczne style (Niebieski dla Picking, Bursztynowy dla Managera)
+                            const isManager = zone.id === 'manager_group';
+                            const bgClass = isManager ? 'bg-amber-50/40 border-amber-200' : 'bg-indigo-50/40 border-indigo-200';
+                            const headerBgClass = isManager ? 'bg-amber-100/60 border-amber-200' : 'bg-indigo-100/60 border-indigo-200';
+                            const headerTextClass = isManager ? 'text-amber-800' : 'text-indigo-800';
+                            const badgeBgClass = isManager ? 'text-amber-700 border-amber-200' : 'text-indigo-700 border-indigo-200';
+                            const subZoneHoverClass = isManager ? 'hover:border-amber-300' : 'hover:border-indigo-300';
+                            const subZoneBadgeClass = isManager ? 'text-amber-600' : 'text-indigo-600';
+
+                            return (
+                                <div key={zone.id} className={`${bgClass} border-2 rounded-2xl flex flex-col flex-[1.2] min-w-[240px] shadow-sm overflow-hidden transition-all`}>
+                                    
+                                    {/* Nagłówek grupy */}
+                                    <div className={`p-2 border-b ${headerBgClass} flex justify-between items-center shadow-sm z-10`}>
+                                        <div className="flex items-center">
+                                            {isManager && <Briefcase size={10} className="text-amber-500 shrink-0 mr-1.5" />}
+                                            <h3 className={`text-[10px] font-black uppercase tracking-widest ${headerTextClass}`}>{zone.label}</h3>
+                                        </div>
+                                        <span className={`text-[9px] font-black bg-white px-1.5 py-0.5 rounded-md border shadow-sm ${badgeBgClass}`}>{totalWorkersInGroup}</span>
+                                    </div>
+                                    
+                                    {/* Kolumna przewijana pionowo z kwadratami */}
+                                    <div className="flex-1 flex flex-col gap-2 p-2 bg-slate-100/50 overflow-y-auto custom-scrollbar">
+                                        {zone.subZones.map(subZone => (
+                                            <div key={subZone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, subZone.id)} className={`bg-white border border-slate-200 rounded-xl flex flex-col shrink-0 min-h-[160px] overflow-hidden transition-colors shadow-sm ${subZoneHoverClass}`}>
+                                                <div className="p-1.5 border-b border-slate-50 bg-slate-50 flex justify-between items-center">
+                                                    <h4 className="text-[9px] font-black uppercase tracking-widest text-slate-500 truncate">{subZone.label}</h4>
+                                                    <span className={`text-[9px] font-black bg-white px-1.5 py-[1px] rounded border border-slate-200 leading-none ${subZoneBadgeClass}`}>{zones[subZone.id]?.length || 0}</span>
+                                                </div>
+                                                <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start bg-slate-50/30">
+                                                    {zones[subZone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={subZone.id} />)}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                                <span className={`text-[9px] font-black bg-white px-1.5 py-0.5 rounded-md border shrink-0 ${zone.id === 'manager_tasks' ? 'text-amber-600 border-amber-200' : 'text-indigo-600 border-indigo-100'}`}>{zones[zone.id]?.length || 0}</span>
+                            );
+                        }
+
+                        // Renderowanie standardowej, pojedynczej strefy
+                        return (
+                            <div key={zone.id} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, zone.id)} className="bg-white border border-slate-200 rounded-2xl flex flex-col flex-1 min-w-0 shadow-sm overflow-hidden transition-all hover:border-indigo-200">
+                                <div className="p-2.5 border-b border-slate-50 bg-slate-50/50 flex justify-between items-center transition-colors">
+                                    <div className="flex items-center gap-1.5 truncate">
+                                        <h3 className="text-[9px] font-black uppercase tracking-widest truncate text-slate-500">{zone.label}</h3>
+                                    </div>
+                                    <span className="text-[9px] font-black bg-white px-1.5 py-0.5 rounded-md border shrink-0 text-indigo-600 border-indigo-100">{zones[zone.id]?.length || 0}</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start">
+                                    {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
+                                </div>
                             </div>
-                            
-                            {/* Wymuszone 3 kolumny dla strefy operacyjnej */}
-                            <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start">
-                                {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
-                            </div>
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             </div>
 

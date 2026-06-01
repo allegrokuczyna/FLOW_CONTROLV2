@@ -105,4 +105,4 @@ async def poll_gates_and_update(db: AsyncSession):
         except Exception as e:
             print(f"❌ [BRAMKA] Błąd podczas przetwarzania: {e}")
         
-        await asyncio.sleep(15) # Skrócony czas dla płynności
+        await asyncio.sleep(2) # Skrócony czas dla płynności
