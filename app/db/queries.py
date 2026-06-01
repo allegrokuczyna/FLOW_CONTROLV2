@@ -85,7 +85,47 @@ async def get_sorting_open_works(db: AsyncSession):
 
     result = await db.execute(stmt)
     return result.scalars().all()
- 
+
+
+async def get_active_inbound_works(db: AsyncSession):
+    """pobieranie otwarych prach przyjecia"""
+
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "Przyjęcie Mezanina",
+            ActiveWork.workstatus == "InProcess"
+        )
+
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+
+
+async def get_zone_pick_open_works(db: AsyncSession):
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "JEDN ZP",
+            ActiveWork.workstatus == "Open"
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+
+async def get_multi_zone_pick_open_works(db: AsyncSession):
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "WIEL ZP",
+            ActiveWork.workstatus == "Open"
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
 # ==============================================================================
 # SEKCJA: PROGNOZY I PLANOWANIE (FORECAST)
 # ==============================================================================
