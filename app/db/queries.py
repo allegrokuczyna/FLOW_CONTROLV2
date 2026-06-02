@@ -115,6 +115,43 @@ async def get_zone_pick_open_works_1M1B2(db: AsyncSession):
     return result.scalars().all()
 
 
+async def get_zone_pick_open_works_1M1B1(db: AsyncSession):
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "JEDN ZP",
+            ActiveWork.workstatus == "Open",
+            ActiveWork.whaadditionalzone2 == "MEZZ-1M1B1"
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_zone_pick_open_works_1M0B1(db: AsyncSession):
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "JEDN ZP",
+            ActiveWork.workstatus == "Open",
+            ActiveWork.whaadditionalzone2 == "MEZZ-1M0B1"
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_zone_pick_open_works_1M0B2(db: AsyncSession):
+    stmt = (
+        select(ActiveWork).filter(
+            ActiveWork.workpoolid == "JEDN ZP",
+            ActiveWork.workstatus == "Open",
+            ActiveWork.whaadditionalzone2 == "MEZZ-1M0B2"
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+
 
 async def get_multi_zone_pick_open_works(db: AsyncSession):
     stmt = (

@@ -20,7 +20,6 @@ const Dashboard = () => {
     const fetchDashboardData = async () => {
         setIsLoading(true);
         try {
-            // Zmiana: axios.get -> api.get. Usunięto `/api` z początku URL, bo masz je już w baseURL w api.js
             const [forecastRes, activeRes, inactiveRes] = await Promise.all([
                 api.get(`/analytics/forecast/hourly?target_date=${date}`).catch(() => ({ data: [] })),
                 api.get(`/plan/active-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } })),
@@ -77,7 +76,6 @@ const Dashboard = () => {
             
             if (response.data.status === 'success') {
                 const rep = response.data.report;
-                // Teraz alert pokaże PRAWDE o tym, co zrobiono
                 alert(
                     `📊 Raport z serwera:\n\n` +
                     `📅 Grafik: ${rep.schedule || 'Brak danych / Błąd'}\n` +
@@ -96,10 +94,14 @@ const Dashboard = () => {
         }
     };
 
-    const total1F = hourlyData.reduce((sum, h) => sum + h.yf, 0);
-    const total1P = hourlyData.reduce((sum, h) => sum + h.yp, 0);
+    // --- BEZPIECZNE RZUTOWANIE NA LICZBY (Zabezpieczenie przed NaN) ---
+    const total1F = hourlyData.reduce((sum, h) => sum + (Number(h.yf) || 0), 0);
+    const total1P = hourlyData.reduce((sum, h) => sum + (Number(h.yp) || 0), 0);
     const totalAll = total1F + total1P;
-    const maxVal = Math.max(...hourlyData.map(h => Math.max(h.yf, h.yp)), 100);
+    const maxVal = Math.max(
+        ...hourlyData.map(h => Math.max(Number(h.yf) || 0, Number(h.yp) || 0)), 
+        100
+    );
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500 p-1">
@@ -111,7 +113,6 @@ const Dashboard = () => {
                 </div>
                 <div className="flex items-center gap-3">
                     
-                    {/* --- NOWY PRZYCISK IMPORTU EXCELA --- */}
                     <input 
                         type="file" 
                         ref={fileInputRef} 
@@ -129,7 +130,6 @@ const Dashboard = () => {
                         <span className="hidden md:inline">{isUploading ? 'Wgrywanie...' : 'Import Master Excel'}</span>
                     </button>
 
-                    {/* WIDŻET DATY */}
                     <div className="flex items-center bg-[#151923] p-1 rounded-lg border border-slate-700">
                         <CalendarDays size={14} className="text-indigo-400 ml-2" />
                         <input 
@@ -190,7 +190,6 @@ const Dashboard = () => {
                     <UserMinus size={140} className="absolute -bottom-8 -right-8 text-white opacity-10 group-hover:scale-110 transition-transform duration-700" />
                 </div>
 
-                {/* Miejsce na sekcję rekomendacji obsady AI */}
                 <div className="border border-dashed border-slate-200 rounded-2xl flex items-center justify-center bg-white/50 text-slate-400 text-xs font-semibold shadow-sm p-6 text-center">
                     Miejsce na sekcję rekomendacji obsady AI (Wkrótce)
                 </div>
@@ -232,16 +231,20 @@ const Dashboard = () => {
                         <div>
                             <div className="h-24 flex items-end gap-1 px-2 border-b border-slate-100 overflow-x-auto pb-1 custom-scrollbar">
                                 {hourlyData.map((h) => {
-                                    const h1F = (h.yf / maxVal) * 100;
-                                    const h1P = (h.yp / maxVal) * 100;
+                                    // Zabezpieczamy wartości dla paska wykresu
+                                    const valF = Number(h.yf) || 0;
+                                    const valP = Number(h.yp) || 0;
+                                    const h1F = maxVal > 0 ? (valF / maxVal) * 100 : 0;
+                                    const h1P = maxVal > 0 ? (valP / maxVal) * 100 : 0;
+                                    
                                     return (
                                         <div key={h.hour} className="flex-1 min-w-[32px] flex items-end justify-center gap-[2px] group relative h-full">
                                             <div style={{ height: `${h1F}%` }} className="w-3 bg-indigo-500 rounded-t-[2px] transition-all group-hover:bg-indigo-600 relative"></div>
                                             <div style={{ height: `${h1P}%` }} className="w-3 bg-amber-500 rounded-t-[2px] transition-all group-hover:bg-amber-600 relative"></div>
 
                                             <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[9px] p-1.5 rounded shadow-xl hidden group-hover:block z-30 whitespace-nowrap font-bold">
-                                                <p className="text-indigo-400">1F: {h.yf.toLocaleString()} pcs</p>
-                                                <p className="text-amber-400">1P: {h.yp.toLocaleString()} pcs</p>
+                                                <p className="text-indigo-400">1F: {valF.toLocaleString()} pcs</p>
+                                                <p className="text-amber-400">1P: {valP.toLocaleString()} pcs</p>
                                                 <p className="border-t border-slate-700 mt-0.5 pt-0.5 text-[8px] text-slate-400 font-normal">Godzina: {h.hour}</p>
                                             </div>
                                         </div>
@@ -290,7 +293,8 @@ const Dashboard = () => {
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700">
                                         {hourlyData.map((h) => {
-                                            const currentPcs = activeModal === '1F' ? h.yf : h.yp;
+                                            // Bezpieczne rzutowanie dla okna modalnego
+                                            const currentPcs = activeModal === '1F' ? (Number(h.yf) || 0) : (Number(h.yp) || 0);
                                             const startHour = h.hour;
                                             const endHour = `${String((parseInt(startHour.split(':')[0]) + 1) % 24).padStart(2, '0')}:00`;
                                             

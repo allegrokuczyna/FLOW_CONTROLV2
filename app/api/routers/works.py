@@ -11,6 +11,9 @@ from app.db.queries import (
     get_sorting_open_works,
     get_active_inbound_works,
     get_zone_pick_open_works_1M1B2,
+    get_zone_pick_open_works_1M1B1,
+    get_zone_pick_open_works_1M0B1,
+    get_zone_pick_open_works_1M0B2,
     get_multi_zone_pick_open_works
 )
 
@@ -74,7 +77,42 @@ async def get_open_zone_pick_works(db: AsyncSession = Depends(get_db)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+@router.get("/zonepick/open-1M1B1")
+async def get_open_zone_pick_works_1M1B1(db: AsyncSession = Depends(get_db)):
+    """pobieranie otwartych prac zone pick 1m1b1"""
+    try:
+        works = await get_zone_pick_open_works_1M1B1(db)
+        return {"status": "success", "total_count": len(works), "data": jsonable_encoder(works)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/zonepick/open-1M0B1")
+async def get_open_zone_pick_works_1M0B1(db: AsyncSession = Depends(get_db)):
+    """pobieranie otwartych prac zone pick 1m0b1"""
+    try:
+        works = await get_zone_pick_open_works_1M0B1(db)
+        return {"status": "success", "total_count": len(works), "data": jsonable_encoder(works)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@router.get("/zonepick/open-1M0B2")
+async def get_open_zone_pick_works_1M0B2(db: AsyncSession = Depends(get_db)):
+    """pobieranie otwartych prac zone pick 1m0b2"""
+    try:
+        works = await get_zone_pick_open_works_1M0B2(db)
+        return {"status": "success", "total_count": len(works), "data": jsonable_encoder(works)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+
 
 
 @router.get("/multizonepick/open")

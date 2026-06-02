@@ -75,7 +75,8 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
     - Zakładka 1: Grafik (zabezpieczona przed brakiem drugiej zakładki)
     """
     today = date.today()
-    target_dates = [today + timedelta(days=i) for i in range(7)]
+    # Szerokie okno czasowe: 14 dni wstecz, 30 dni w przód
+    target_dates = [today + timedelta(days=i) for i in range(-14, 31)]
     report = {}
 
     try:
@@ -121,7 +122,18 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
                         continue
                         
                     work_date = flexible_date_parser(col)
-                    if work_date in target_dates:
+                    
+                    # --- AUTOKOREKTA AMERYKAŃSKICH DAT W GRAFIKU ---
+                    if work_date and work_date not in target_dates:
+                        try:
+                            # Próba zamiany miejscami: z 6 kwietnia (2026-04-06) robimy 4 czerwca (2026-06-04)
+                            swapped_date = work_date.replace(month=work_date.day, day=work_date.month)
+                            if swapped_date in target_dates:
+                                work_date = swapped_date
+                        except ValueError:
+                            pass
+                            
+                    if work_date and work_date in target_dates:
                         raw_val = row.get(col)
                         shift_val = str(raw_val).strip()
                         
@@ -167,7 +179,6 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
     try:
         df_master = pd.read_excel(excel_file, sheet_name=0, header=1)
         
-        # Cięcie bloków
         df_1p = df_master.iloc[:, 0:6]
         df_1f = df_master.iloc[:, 6:12]
 
@@ -182,19 +193,56 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
         await db.execute(delete(ForecastIntake).where(ForecastIntake.forecast_date.in_(target_dates)))
         new_forecasts = []
         
-        # --- ZAKTUALIZOWANY HELPER FORECASTU (Poprawny indeks godziny) ---
         def parse_forecast_stream(df_stream, client_label):
+            last_valid_date = None
+            
             for _, row in df_stream.iterrows():
-                # 1. Parsowanie czystej daty (Indeks 0)
-                date_val = pd.to_datetime(row.iloc[0], errors='coerce', dayfirst=True)
-                if pd.isna(date_val):
-                    continue
+                raw_date = row.iloc[0]
+                
+                # 1. Scalone komórki (puste) podciągamy pod ostatnią dobrą datę
+                if pd.isna(raw_date) or str(raw_date).strip() == '' or str(raw_date).lower() == 'nan':
+                    if last_valid_date is not None:
+                        date_val = last_valid_date
+                    else:
+                        continue
+                else:
+                    if isinstance(raw_date, (datetime, pd.Timestamp)):
+                        date_val = raw_date
+                        # --- AUTOKOREKTA AMERYKAŃSKICH DAT W FORECAŚCIE ---
+                        if date_val.date() not in target_dates:
+                            try:
+                                swapped = date_val.replace(month=date_val.day, day=date_val.month)
+                                if swapped.date() in target_dates:
+                                    date_val = swapped
+                            except Exception:
+                                pass
+                    else:
+                        raw_str = str(raw_date).replace('.', '/').replace('-', '/').strip()
+                        
+                        # Fix dla dwucyfrowych lat (26 -> 2026)
+                        parts = raw_str.split('/')
+                        if len(parts) == 3 and len(parts[2]) == 2:
+                            parts[2] = "20" + parts[2]
+                            raw_str = "/".join(parts)
+
+                        date_val = pd.to_datetime(raw_str, errors='coerce', dayfirst=True)
+                        
+                        # Drugi stopień autokorekty (gdy parser wymusił złą datę)
+                        if pd.notna(date_val) and date_val.date() not in target_dates:
+                            alt_date = pd.to_datetime(raw_str, errors='coerce', dayfirst=False)
+                            if pd.notna(alt_date) and alt_date.date() in target_dates:
+                                date_val = alt_date
+
+                    if pd.isna(date_val):
+                        continue
+                        
+                    last_valid_date = date_val
                     
                 if date_val.date() in target_dates:
-                    # 2. Parsowanie godziny z kolumny FROM (W Excelu to indeks 2, bo indeks 1 to "Day")
-                    hour_dt = datetime.combine(date_val.date(), time(0, 0)) # Default
+                    # 2. Parsowanie godziny
+                    hour_dt = datetime.combine(date_val.date(), time(0, 0))
                     try:
-                        raw_time = row.iloc[2] # <--- KLUCZOWA ZMIANA Z 1 NA 2
+                        raw_time = row.iloc[2]
                         if pd.notna(raw_time):
                             if isinstance(raw_time, time):
                                 hour_dt = datetime.combine(date_val.date(), raw_time)
@@ -207,7 +255,7 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
                     except Exception:
                         pass 
 
-                    # 3. Ilość sztuk z kolumny PCS Intake (Indeks 5)
+                    # 3. Parsowanie PCS
                     try:
                         pcs_val = float(row.iloc[5]) if pd.notna(row.iloc[5]) else 0
                     except (ValueError, TypeError):
@@ -269,7 +317,6 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
 
     await db.commit()
     return report
-
 # ==============================================================================
 # 3. ODCZYT GRAFIKU / PLANOWANIE ZADAŃ
 # ==============================================================================
