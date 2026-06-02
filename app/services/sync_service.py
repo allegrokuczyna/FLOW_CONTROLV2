@@ -616,7 +616,7 @@ async def sync_template_module(db: AsyncSession):
     print("🕵️‍♂️ START DEBUGOWANIA: sync_template_module")
     
     # ZMIANA: Dodany zamykający apostrof po ADM-01
-    endpoint = "SalesOrderHeadersV3?cross-company=true&$filter=ShippingWarehouseId eq 'ADM-01'&$top=500"
+    endpoint = "SalesOrderHeadersV4?cross-company=true&$filter=ShippingWarehouseId eq 'ADM-01'&$top=500"
     print(f"📍 1. Zbudowany endpoint: {endpoint}")
     
     try:
@@ -691,3 +691,75 @@ async def sync_template_module(db: AsyncSession):
         await db.rollback() 
         print(f"🔥 BŁĄD KODU PYTHON W SYNC TEMPLATE: {str(e)}")
         print("="*50 + "\n")
+
+
+
+async def sync_active_works_from_d365(db: AsyncSession):
+
+    print(f"[{datetime.datetime.now()}] 🔄 Rozpoczynam pobieranie otwartych prac z D365...")
+
+    try:
+        # 1. POBIERAMY ŚWIEŻY TOKEN
+        token = await get_d365_access_token()
+
+        # 2. BUDUJEMY URL NA BAZIE USTAWIEŃ
+        # rstrip('/') zabezpiecza nas, jeśli url w .env kończy się ukośnikiem (np. ...com/)
+        base_url = settings.D365_URL.rstrip('/')
+        d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+        # 3. PAYLOAD Z ZAPYTANIEM (Tak jak w n8n)
+        payload = {
+            "_request": {
+                "Message": {
+                    "RequestID": "fastapi-sync-works",
+                    "RequestType": "GetRows",
+                    "RequestService": "QRDE",
+                    "RequestSource": "FastAPI" 
+                },
+                "EndpointParamName": "SalesWithoutShippingType", 
+                "QueryValues": []
+            }
+        }
+
+        # Podpinamy wygenerowany token
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+
+        # 4. STRZAŁ DO D365
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            
+            # Wyrzuca dokładny błąd, jeśli zapytanie HTTP się nie powiodło (np. 401 Unauthorized, 500)
+            response.raise_for_status() 
+            
+            d365_data = response.json()
+
+            rows = d365_data 
+            
+            if not rows or not isinstance(rows, list):
+                print("⚠️ D365 zwróciło pustą listę lub błędny format. Brak otwartych prac.")
+                return
+
+            # 5. ZMIANA NAZW KOLUMN NA MAŁE LITERY (zgodnie z modelem ActiveWork)
+            mapped_rows = []
+            for row in rows:
+                mapped_rows.append({str(k).lower(): v for k, v in row.items()})
+
+            # 6. ZAPIS DO BAZY (PEŁNY SNAPSHOT)
+            # Krok A: Wycierka starej tabeli (skoro D365 wysyła tylko aktywne prace)
+            await db.execute(delete(ActiveWork))
+            
+            # Krok B: Wstawienie nowych danych
+            db.add_all([ActiveWork(**row) for row in mapped_rows])
+            
+            await db.commit()
+            print(f"✅ Sukces! Zaktualizowano Live Status. Zapisano {len(mapped_rows)} prac.")
+
+    except httpx.HTTPStatusError as exc:
+        # Ten blok złapie błędy samego D365 (np. gdy zepsuje się QRDE) i wypisze treść błędu!
+        print(f"❌ [HTTP D365 ERROR] Błąd {exc.response.status_code}: {exc.response.text}")
+    except Exception as e:
+        await db.rollback()
+        print(f"❌ [BŁĄD APLIKACJI] Błąd synchronizacji prac: {str(e)}")

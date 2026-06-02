@@ -184,12 +184,14 @@ class ZoneConstraint(Base):
 class SalesTable(Base):
     __tablename__ = "salestable"
     id = Column(Integer, primary_key=True, index=True)
-    salesorderlinecreationmethod = Column(String, index=True)
-    sourceordernumber = Column(String, index=True)
-    salesorderprocessingstatus = Column(String, index=True)
-    deliverymodecode = Column(String, index=True)
-    orderedsalesquantity = Column(Integer, nullable=False)
-    itemnumber = Column(String, nullable=False)
-    requestedshippingdate = Column(DateTime, nullable=True)
-    ordercreationdatetime = Column(DateTime, nullable=False)
+    salesordernumber = Column(String, index=True)
+    orderedsalesquantity = Column(Float)
+    shippingwarehouseid = Column(String)
+    linenumber = Column(Integer)
+    itemnumber = Column(String)
+    orderinventorystatusid = Column(String)
+    salesorderlinestatus = Column(String)
+    requestedshippingdate = Column(DateTime)
+    
+    
 
