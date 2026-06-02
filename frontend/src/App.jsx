@@ -8,8 +8,10 @@ import SystemData from './components/SystemData';
 import ScheduleGrid from './components/ScheduleGrid';
 import ProductivityGrid from './components/ProductivityGrid';
 import D365Sync from './components/D365Sync';
-// 1. DODANY IMPORT TABLICY TV Z NOWEGO FOLDERU
+// 1. IMPORT TABLICY TV Z NOWEGO FOLDERU
 import TVBoard from './tv/TVBoard'; 
+// 2. IMPORT NOWEGO KOMPONENTU LIVE STATUS
+import LiveStatus from './components/LiveStatus';
 
 function App() {
   // =========================================================================
@@ -107,20 +109,28 @@ function App() {
             </div>
           )}
 
-          {/* Widok: D365 SYNC (PANEL SYNCHRONIZACJI) - DODANO! */}
+          {/* Widok: D365 SYNC (PANEL SYNCHRONIZACJI) */}
           {activeTab === 'sync' && (
             <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
                <D365Sync />
             </div>
           )}
 
-          {/* EKRAN DLA MODUŁÓW W BUDOWIE - Zaktualizowany warunek o "sync" */}
+          {/* Widok: LIVE STATUS (NOWOŚĆ) */}
+          {activeTab === 'live' && (
+            <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
+               <LiveStatus />
+            </div>
+          )}
+
+          {/* EKRAN DLA MODUŁÓW W BUDOWIE - Dodany warunek wykluczający 'live' */}
           {activeTab !== 'dashboard' && 
            activeTab !== 'plan' && 
            activeTab !== 'dane' && 
            activeTab !== 'schedule' && 
            activeTab !== 'productivity' && 
-           activeTab !== 'sync' && (
+           activeTab !== 'sync' && 
+           activeTab !== 'live' && (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 bg-white/50">
               <Bot size={64} className="mb-4 opacity-10" />
               <h2 className="text-2xl font-black uppercase tracking-widest opacity-20">

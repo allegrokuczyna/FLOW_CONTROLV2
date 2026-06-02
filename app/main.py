@@ -16,6 +16,7 @@ from app.api.endpoints import router as api_router
 import app.db.models 
 from app.services.gate_sync import poll_gates_and_update  # Agent SSRS
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Inicjalizacja głównej bazy (Postgres)
