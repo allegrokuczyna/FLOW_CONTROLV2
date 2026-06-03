@@ -38,9 +38,14 @@ async def lifespan(app: FastAPI):
                 try:
                     # Otwieramy osobną, krótką sesję bazy specjalnie dla bota automatycznego
                     async with AsyncSessionLocal() as d365_session:
-                        from app.api.routers.sync import execute_d365_sync
+                        # POPRAWKA: Zaimportowanie nowej funkcji z QRDE
+                        from app.api.routers.sync import execute_d365_qrde_sync
+                        
                         print("🕒 [HARMONOGRAM] Rozpoczynam automatyczną synchronizację z D365...")
-                        await execute_d365_sync(d365_session, triggered_by="Automatycznie")
+                        
+                        # POPRAWKA: Wywołanie poprawnej funkcji
+                        await execute_d365_qrde_sync(d365_session, triggered_by="Automatycznie")
+                        
                         print("🕒 [HARMONOGRAM] Automatyczna synchronizacja zakończona sukcesem.")
                 except Exception as e:
                     print(f"❌ [HARMONOGRAM] Błąd pętli automatycznej D365: {e}")

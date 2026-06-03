@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
-from app.db.models import ActiveWork, Schedule, WorkerPerformance, AiReportLog, ForecastIntake
+from app.db.models import Schedule, WorkerPerformance, AiReportLog, ForecastIntake
 from datetime import date, datetime, timedelta
 
 # ==============================================================================
@@ -28,160 +28,27 @@ async def fetch_ai_report_logs(db: AsyncSession, limit: int = 10):
 
 
 # ==============================================================================
-# aktywni pracownicy na magazynie.
+# SEKCJA: OBECNOŚĆ NA MAGAZYNIE
 # ==============================================================================
 
 async def get_active_workers(db: AsyncSession, target_date: date):
-    """pobieram liste aktywnych pracowników na magazynie"""
-    stmt = (
-        select(Schedule).filter(Schedule.is_present == True, Schedule.work_date == target_date))
+    """Pobiera listę aktywnych pracowników obecnych na magazynie."""
+    stmt = select(Schedule).filter(Schedule.is_present == True, Schedule.work_date == target_date)
     result = await db.execute(stmt)
     return result.scalars().all()
 
 
 async def get_inactive_workers(db: AsyncSession, target_date: date):
-    """pobieram liste nieaktywnych pracowników na magazynie"""
-    stmt = (
-        select(Schedule).filter(Schedule.is_present == False, Schedule.work_date == target_date))
+    """Pobiera listę nieobecnych/planowanych pracowników."""
+    stmt = select(Schedule).filter(Schedule.is_present == False, Schedule.work_date == target_date)
     result = await db.execute(stmt)
     return result.scalars().all()
-
 
 
 # ==============================================================================
-# SEKCJA: PRACE OPERACYJNE (D365 ACTIVE WORK)
+# 🚀 SEKCJA: PRACE OPERACYJNE (Zoptymalizowane pod czysty silnik QRDE)
 # ==============================================================================
 
-async def get_replenishment_open_works(db: AsyncSession):
-    """Pobieranie otwartych prac uzupełnień (Replenishment)."""
-    # Lista czystych nazw z Proda
-    target_pools = [
-        'u_adm-01_ hv', 'u_adm-01_ mez', 'u_adm-01_ pw', 
-        'u_adm-01_ std', 'u_adm-01_ kartony', 'u_adm-01_ wyc'
-    ]
-    
-    stmt = (
-        select(ActiveWork)
-        .where(
-            func.lower(ActiveWork.workpoolid).in_(target_pools),
-            ActiveWork.workstatus == 'Open'
-        )
-        .order_by(ActiveWork.workid)
-    )
-
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-
-
-async def get_sorting_open_works(db: AsyncSession):
-    """pobieranie otwartych prac sortowania"""
-    target_pools = ['PackedContainerPicking']
-
-    stmt = (
-        select(ActiveWork).filter(ActiveWork.worktranstype == 'PackedContainerPicking', ActiveWork.workstatus == 'Open')
-    )
-
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def get_active_inbound_works(db: AsyncSession):
-    """pobieranie otwarych prach przyjecia"""
-
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "Przyjęcie Mezanina",
-            ActiveWork.workstatus == "InProcess"
-        )
-
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-
-
-async def get_zone_pick_open_works_1M1B2(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M1B2"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def get_zone_pick_open_works_1M1B1(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M1B1"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def get_zone_pick_open_works_1M0B1(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M0B1"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def get_zone_pick_open_works_1M0B2(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M0B2"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-async def get_zone_pick_open_works_1M2B1(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M2B1"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-async def get_zone_pick_open_works_1M2B2(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "JEDN ZP",
-            ActiveWork.workstatus == "Open",
-            ActiveWork.whaadditionalzone2 == "MEZZ-1M2B2"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def get_multi_zone_pick_open_works(db: AsyncSession):
-    stmt = (
-        select(ActiveWork).filter(
-            ActiveWork.workpoolid == "WIEL ZP",
-            ActiveWork.workstatus == "Open"
-        )
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
 
 
 # ==============================================================================
@@ -191,9 +58,6 @@ async def get_multi_zone_pick_open_works(db: AsyncSession):
 async def get_upcoming_forecast(db: AsyncSession):
     """Pobiera forecast na obecną i kolejne godziny dzisiejszego oraz jutrzejszego dnia."""
     now = datetime.utcnow()
-    
-    # ZWIĘKSZONE OKNO CZASOWE: 
-    # 4 godziny wstecz.
     start_time = now - timedelta(hours=4)
     end_time = now + timedelta(hours=24)
 
@@ -210,8 +74,6 @@ async def get_upcoming_forecast(db: AsyncSession):
         "hour_from": f.hour_from.isoformat(),
         "forecast_pcs": f.forecast_pcs
     } for f in forecasts]
-
-
 
 
 async def get_raw_hourly_forecast(db: AsyncSession, target_date: date):
@@ -233,12 +95,9 @@ async def get_raw_hourly_forecast(db: AsyncSession, target_date: date):
     return result.all()
 
 
-
 async def calculate_hourly_forecast_report(db: AsyncSession, target_date_str: str) -> list:
     """Konwertuje surowe dane z bazy na format czytelny dla frontendu."""
     d = date.fromisoformat(target_date_str)
-    
-    # Wywołanie zapytania z warstwy queries
     raw_rows = await get_raw_hourly_forecast(db, d)
     
     hourly_map = {}

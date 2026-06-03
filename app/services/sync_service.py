@@ -7,7 +7,7 @@ from sqlalchemy import delete, insert, cast, Date, select, func
 from sqlalchemy.dialects.postgresql import insert  # Wyłącznie Postgres do UPSERT
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkExport, WorkerPerformance, Schedule, ActiveWork, ShiftAssignment, ForecastIntake, ZoneConstraint, SalesTable
+from app.db.models import WorkerPerformance, Schedule, ShiftAssignment, ForecastIntake, ZoneConstraint, WorkerSpecialTask
 import logging
 
 # ==============================================================================
@@ -53,16 +53,6 @@ def parse_skill_level(value):
         else: return 6
     except:
         return 0
-
-async def get_data(endpoint_url: str):
-    """Uniwersalny helper do API D365."""
-    token = await get_d365_access_token()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    base_url = str(settings.D365_URL).strip('/')
-    url = f"{base_url}/data/{endpoint_url}"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(url, headers=headers)
-        return response.json().get("value", []) if response.status_code == 200 else []
 
 # ==============================================================================
 # 2. GŁÓWNY SILNIK IMPORTU Z EXCELA
@@ -114,11 +104,17 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
                 full_name = str(row.get('Imię i Nazwisko', '')).strip()
                 prefix = str(row.get('Prefiks Grupy', '')).strip() 
                 
+                # --- NOWE: Odczyt kolumny "Proces" ---
+                process_val = str(row.get('Proces', '')).strip()
+                if not process_val or process_val.lower() == 'nan':
+                    process_val = None
+                
                 if not login or login.lower() == 'nan': 
                     continue
                 
                 for col in df_g.columns:
-                    if col in ['Numer Pracownika', 'Imię i Nazwisko', 'Status', 'Prefiks Grupy']:
+                    # --- NOWE: Ignorujemy kolumnę "Proces", żeby nie traktował jej jako daty ---
+                    if col in ['Numer Pracownika', 'Imię i Nazwisko', 'Status', 'Prefiks Grupy', 'Proces']:
                         continue
                         
                     work_date = flexible_date_parser(col)
@@ -126,7 +122,6 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
                     # --- AUTOKOREKTA AMERYKAŃSKICH DAT W GRAFIKU ---
                     if work_date and work_date not in target_dates:
                         try:
-                            # Próba zamiany miejscami: z 6 kwietnia (2026-04-06) robimy 4 czerwca (2026-06-04)
                             swapped_date = work_date.replace(month=work_date.day, day=work_date.month)
                             if swapped_date in target_dates:
                                 work_date = swapped_date
@@ -150,18 +145,21 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
                             except ValueError:
                                 pass 
 
+                        # --- NOWE: Zapis kolumny process_val do bazy ---
                         stmt = insert(Schedule).values(
                             login=login,
                             full_name=full_name if full_name != 'nan' else None,
                             work_date=work_date,
                             planned_shift=shift_val,
-                            group_prefix=prefix
+                            group_prefix=prefix,
+                            process=process_val 
                         ).on_conflict_do_update(
                             index_elements=['login', 'work_date'],
                             set_={
                                 "planned_shift": shift_val,
                                 "full_name": full_name if full_name != 'nan' else None,
-                                "group_prefix": prefix
+                                "group_prefix": prefix,
+                                "process": process_val
                             }
                         )
                         await db.execute(stmt)
@@ -227,7 +225,6 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
 
                         date_val = pd.to_datetime(raw_str, errors='coerce', dayfirst=True)
                         
-                        # Drugi stopień autokorekty (gdy parser wymusił złą datę)
                         if pd.notna(date_val) and date_val.date() not in target_dates:
                             alt_date = pd.to_datetime(raw_str, errors='coerce', dayfirst=False)
                             if pd.notna(alt_date) and alt_date.date() in target_dates:
@@ -317,6 +314,7 @@ async def process_excel_master(contents: bytes, db: AsyncSession):
 
     await db.commit()
     return report
+
 # ==============================================================================
 # 3. ODCZYT GRAFIKU / PLANOWANIE ZADAŃ
 # ==============================================================================
@@ -335,6 +333,7 @@ async def get_weekly_schedule(db: AsyncSession):
             matrix[s.login] = {
                 "login": s.login,
                 "full_name": s.full_name or "Brak danych",
+                "process": s.process,
                 "days": {}
             }
         matrix[s.login]["days"][str(s.work_date)] = s.planned_shift
@@ -359,6 +358,7 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
     if target_date is None: 
         target_date = date.today()
     
+    # 1. Pobieramy grafiki, przypisania i skille (to już miałeś)
     sched_stmt = select(Schedule).where(cast(Schedule.work_date, Date) == target_date)
     sched_res = await db.execute(sched_stmt)
     schedules = sched_res.scalars().all()
@@ -371,6 +371,12 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
     perf_res = await db.execute(perf_stmt)
     performances = {str(p.login): p for p in perf_res.scalars().all()}
 
+    # --- NOWE: 2. Pobieramy zadania specjalne (indirects) ---
+    special_stmt = select(WorkerSpecialTask)
+    special_res = await db.execute(special_stmt)
+    # Tworzymy słownik { "login": "nazwa_zadania" } do szybkiego wyszukiwania
+    special_tasks = {str(s.login): s.task_name for s in special_res.scalars().all()}
+
     plan_data = []
     for s in schedules:
         hours = str(s.planned_shift).strip()
@@ -379,15 +385,21 @@ async def get_daily_plan(db: AsyncSession, target_date: date = None):
             
         worker_id = str(s.login)
         p = performances.get(worker_id)
-        current_task = assignments.get(worker_id, "unassigned")
+        
+
+        current_task = assignments.get(worker_id)
+
+        if not current_task:
+            current_task = special_tasks.get(worker_id, "unassigned")
 
         plan_data.append({
             "worker_login": worker_id,
             "full_name": s.full_name,  
             "shift": get_shift_number(hours),
             "hours": hours,
-            "task": current_task,
+            "task": current_task,       
             "is_present": bool(s.is_present), 
+            "process": s.process,      
             "picking": getattr(p, 'picking', 0) if p else 0,
             "packing": getattr(p, 'packing', 0) if p else 0,
             "receiving": getattr(p, 'receiving', 0) if p else 0,
@@ -504,96 +516,11 @@ async def update_or_create_constraints(db: AsyncSession, target_date: str | date
         raise e
 
 # ==============================================================================
-# 6. ANALITYKA I D365
+# 6. ANALITYKA I D365 (Nowa Architektura QRDE)
 # ==============================================================================
 
-async def sync_works(db: AsyncSession):
-    url_works = "WarehouseWorkHeaders?cross-company=true&$filter=WarehouseId eq 'ADM-01' and WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open'&$top=2000"
-    works_data = await get_data(url_works)
-    if not works_data: return
-
-    for w in works_data:
-        if str(w.get("ContainerId") or "").strip() != "": continue
-        
-        stmt = insert(WorkExport).values(
-            work_id=w.get("WarehouseWorkId") or w.get("WorkId"),
-            order_num=str(w.get("SourceOrderNumber", "")).strip(),
-            item_qty=float(w.get("WHASalesItemQty") or 0),
-            work_pool_id=w.get("WarehouseWorkPoolId", "")
-        ).on_conflict_do_update(
-            index_elements=['work_id'],
-            set_={"item_qty": float(w.get("WHASalesItemQty") or 0)}
-        )
-        await db.execute(stmt)
-    await db.commit()
-
-async def sync_active_works(db: AsyncSession):
-    filter_query = "WarehouseId eq 'ADM-01' and (WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'Open' or WarehouseWorkStatus eq Microsoft.Dynamics.DataEntities.WHSWorkStatus'InProcess')"
-    endpoint = f"WarehouseWorkHeaders?cross-company=true&$filter={filter_query}"
-    
-    try:
-        works_data = await get_data(endpoint)
-        if not works_data:
-            return
-
-        def safe_date(date_str):
-            if not date_str or str(date_str).startswith("1900"): 
-                return None
-            try:
-                return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-            except Exception:
-                return None
-
-        to_insert = []
-        sync_time = datetime.utcnow()
-        
-        for w in works_data:
-            to_insert.append({
-                "workid": w.get("WarehouseWorkId") or w.get("WorkId") or "UNKNOWN",
-                "ordernum": w.get("SourceOrderNumber", ""),
-                "shipmentid": w.get("ShipmentId", ""),
-                "loadid": w.get("LoadId", ""),
-                "waveid": w.get("WaveId", ""),
-                "workpoolid": w.get("WarehouseWorkPoolId", ""),
-                "workstatus": w.get("WarehouseWorkStatus", ""),
-                "worktranstype": w.get("WarehouseWorkOrderType", ""),
-                "whasalesitemqty": float(w.get("WHASalesItemQty") or 0.0),
-                "whasalesitemcount": int(w.get("WHASalesItemCount") or 0),
-                "whaworkitemsvolume": 0.0,
-                "whaworkitemsweight": 0.0,
-                "whashippingdaterequested": safe_date(w.get("WHAShippingDateRequested")),
-                "workcreateddatetime": safe_date(w.get("WarehouseWorkProcessingStartDateTime")), 
-                "lockeduser": w.get("WarehouseWorkLockingWarehouseMobileDeviceUserId", ""),
-                "whaadditionalzone2": w.get("WHAAdditionalZone2", ""),
-                "whacarriercode": w.get("WHACarrierCode", ""),
-                "whashipmentspecid": w.get("WHAShipmentSpecId", ""),
-                "targetlicenseplateid": w.get("TargetLicensePlateNumber", ""),
-                "inventlocationid": w.get("WarehouseId", ""),
-                "inventsiteid": w.get("InventorySiteId", ""),
-                "workismultisku": w.get("IsWarehouseWorkBlocked", "No"),
-                "frozen": "No",
-                "workpriority": int(w.get("WorkPriority") or w.get("WarehouseWorkPriority") or 0),
-                "worktemplatecode": "",
-                "containerid": w.get("ContainerId", ""),
-                "clusterid": "",
-                "dataareaid": w.get("dataAreaId", ""),
-                "lastprocessedchange_datetime": sync_time 
-            })
-
-        if len(to_insert) > 0:
-            await db.execute(delete(ActiveWork))
-            chunk_size = 1000
-            for i in range(0, len(to_insert), chunk_size):
-                chunk = to_insert[i:i + chunk_size]
-                await db.execute(insert(ActiveWork), chunk)
-        
-            await db.commit()
-
-    except Exception as e:
-        await db.rollback() 
-        print(f"🔥 KRYTYCZNY BŁĄD D365 SYNC: {str(e)}")
-
 async def get_workpool_analytics(db: AsyncSession):
+    """Zlicza ilości w danych pulach na podstawie przefiltrowanej bazy ActiveWork."""
     stmt = select(ActiveWork).where(ActiveWork.workstatus.in_(['Open', 'InProcess', '0', '1']))
     result = await db.execute(stmt)
     active_works = result.scalars().all()
@@ -606,108 +533,17 @@ async def get_workpool_analytics(db: AsyncSession):
         else: stats['picking'] += qty
     return stats
 
-async def sync_template_module(db: AsyncSession):
-    """Szablon importu danych z D365 - TRYB GŁĘBOKIEGO DEBUGOWANIA"""
-    import httpx
-    from app.core.auth import get_d365_access_token
-    from app.core.config import settings
-
-    print("\n" + "="*50)
-    print("🕵️‍♂️ START DEBUGOWANIA: sync_template_module")
-    
-    # ZMIANA: Dodany zamykający apostrof po ADM-01
-    endpoint = "SalesOrderHeadersV4?cross-company=true&$filter=ShippingWarehouseId eq 'ADM-01'&$top=500"
-    print(f"📍 1. Zbudowany endpoint: {endpoint}")
-    
-    try:
-        # Pobieranie tokena
-        token = await get_d365_access_token()
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        base_url = str(settings.D365_URL).strip('/')
-        url = f"{base_url}/data/{endpoint}"
-        
-        print(f"🔗 2. Pełny adres URL: {url}")
-        
-        # Ręczny strzał do D365, żeby złapać błąd
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(url, headers=headers)
-            
-            print(f"📡 3. Status HTTP od D365: {response.status_code}")
-            
-            if response.status_code != 200:
-                print(f"❌ 4. KRYTYCZNY BŁĄD D365! Odpowiedź serwera:\n{response.text}")
-                print("="*50 + "\n")
-                return
-                
-            res_json = response.json()
-            raw_data = res_json.get("value", [])
-            
-            print(f"📦 5. Pobrano rekordów: {len(raw_data)}")
-            
-            if not raw_data:
-                print("⚠️ D365 zwróciło PUSTĄ LISTĘ. Zapytanie jest poprawne technicznie, ale ZADEN rekord nie spełnia warunku z $filter.")
-                print("="*50 + "\n")
-                return
-
-            print(f"🔍 6. Klucze pierwszego pobranego rekordu:\n{list(raw_data[0].keys())}")
-            print(f"📄 7. Wartość OrderCreationDateTime dla tego rekordu: {raw_data[0].get('OrderCreationDateTime')}")
-
-            # --- Dalsza część zapisująca do bazy ---
-            def safe_date(date_str):
-                if not date_str or str(date_str).startswith("1900"): 
-                    return None
-                try:
-                    return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-                except Exception:
-                    return None
-
-            to_insert = []
-            for item in raw_data:
-                to_insert.append({
-                    "salesorderlinecreationmethod": item.get("SalesOrderLineCreationMethod") or "UNKNOWN",
-                    "sourceordernumber": item.get("SalesOrderNumber") or item.get("SalesOrderNumber", ""),
-                    "deliverymodecode": item.get("ShippingCarrierId", ""),
-                    "requestedshippingdate": safe_date(item.get("RequestedShippingDate")),
-                    "orderedsalesquantity": float(item.get("OrderedSalesQuantity") or 0.0),
-                    "itemnumber": item.get("ItemNumber", ""),
-                    "salesorderprocessingstatus": item.get("SalesOrderStatus", ""),
-                    "ordercreationdatetime": safe_date(item.get("OrderCreationDateTime"))
-                })
-                
-            if len(to_insert) > 0:
-                TargetModel = SalesTable 
-                await db.execute(delete(TargetModel))
-                
-                chunk_size = 1000
-                for i in range(0, len(to_insert), chunk_size):
-                    chunk = to_insert[i:i + chunk_size]
-                    await db.execute(insert(TargetModel), chunk)
-                    
-                await db.commit()
-                print(f"✅ 8. SYNC TEMPLATE ZAKOŃCZONY: Zapisano {len(to_insert)} nagłówków zamówień!")
-                print("="*50 + "\n")
-
-    except Exception as e:
-        await db.rollback() 
-        print(f"🔥 BŁĄD KODU PYTHON W SYNC TEMPLATE: {str(e)}")
-        print("="*50 + "\n")
-
-
-
 async def sync_active_works_from_d365(db: AsyncSession):
-
-    print(f"[{datetime.datetime.now()}] 🔄 Rozpoczynam pobieranie otwartych prac z D365...")
+    """Błyskawiczne pobieranie danych z D365 przy użyciu usługi REST (QRDE)."""
+    print(f"[{datetime.now()}] 🔄 Rozpoczynam pobieranie otwartych prac z D365 (QRDE)...")
 
     try:
-        # 1. POBIERAMY ŚWIEŻY TOKEN
+        # 1. Pobieramy token i budujemy URL
         token = await get_d365_access_token()
-
-        # 2. BUDUJEMY URL NA BAZIE USTAWIEŃ
-        # rstrip('/') zabezpiecza nas, jeśli url w .env kończy się ukośnikiem (np. ...com/)
         base_url = settings.D365_URL.rstrip('/')
         d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
 
-        # 3. PAYLOAD Z ZAPYTANIEM (Tak jak w n8n)
+        # 2. Payload wskazujący zapytanie SQL po stronie Microsoft Dynamics
         payload = {
             "_request": {
                 "Message": {
@@ -721,44 +557,35 @@ async def sync_active_works_from_d365(db: AsyncSession):
             }
         }
 
-        # Podpinamy wygenerowany token
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}"
         }
 
-        # 4. STRZAŁ DO D365
+        # 3. Wykonujemy żądanie POST do Dynamics 365
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(d365_endpoint, json=payload, headers=headers)
-            
-            # Wyrzuca dokładny błąd, jeśli zapytanie HTTP się nie powiodło (np. 401 Unauthorized, 500)
             response.raise_for_status() 
             
             d365_data = response.json()
-
             rows = d365_data 
             
             if not rows or not isinstance(rows, list):
                 print("⚠️ D365 zwróciło pustą listę lub błędny format. Brak otwartych prac.")
                 return
 
-            # 5. ZMIANA NAZW KOLUMN NA MAŁE LITERY (zgodnie z modelem ActiveWork)
+            # 4. Normalizacja i mapowanie kluczy na małe litery
             mapped_rows = []
             for row in rows:
                 mapped_rows.append({str(k).lower(): v for k, v in row.items()})
 
-            # 6. ZAPIS DO BAZY (PEŁNY SNAPSHOT)
-            # Krok A: Wycierka starej tabeli (skoro D365 wysyła tylko aktywne prace)
+            # 5. Zapis Pełnego Snapshotu w bazie
             await db.execute(delete(ActiveWork))
-            
-            # Krok B: Wstawienie nowych danych
             db.add_all([ActiveWork(**row) for row in mapped_rows])
-            
             await db.commit()
             print(f"✅ Sukces! Zaktualizowano Live Status. Zapisano {len(mapped_rows)} prac.")
 
     except httpx.HTTPStatusError as exc:
-        # Ten blok złapie błędy samego D365 (np. gdy zepsuje się QRDE) i wypisze treść błędu!
         print(f"❌ [HTTP D365 ERROR] Błąd {exc.response.status_code}: {exc.response.text}")
     except Exception as e:
         await db.rollback()

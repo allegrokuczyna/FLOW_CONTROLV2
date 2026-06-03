@@ -58,3 +58,9 @@ class DailyConstraintsSave(BaseModel):
 class PresenceUpdate(BaseModel):
     login: str
     is_present: bool
+
+
+class SpecialTaskInput(BaseModel):
+    login: str
+    process: str
+    task_name: str

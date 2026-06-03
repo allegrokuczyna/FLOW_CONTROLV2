@@ -14,7 +14,6 @@ const ScheduleGrid = () => {
         setError(null);
         try {
             const res = await axios.get('/api/plan/weekly');
-            // Upewniamy się, że to co przyszło to faktycznie obiekt z tablicami
             if (res.data && Array.isArray(res.data.workers) && Array.isArray(res.data.dates)) {
                 setSchedule(res.data);
             } else {
@@ -30,15 +29,17 @@ const ScheduleGrid = () => {
 
     useEffect(() => { fetchWeekly(); }, []);
 
-    // PANCERNE FILTROWANIE: Zabezpieczone przed null, undefined i liczbami
     const safeWorkers = Array.isArray(schedule.workers) ? schedule.workers : [];
     const safeDates = Array.isArray(schedule.dates) ? schedule.dates : [];
 
+    // ZAKTUALIZOWANE FILTROWANIE: Szuka teraz po imieniu, loginie ORAZ PROCESIE
     const filteredWorkers = safeWorkers.filter(w => {
         const name = String(w.full_name || "").toLowerCase();
         const login = String(w.login || "").toLowerCase();
+        const process = String(w.process || "").toLowerCase();
         const searchLower = search.toLowerCase();
-        return name.includes(searchLower) || login.includes(searchLower);
+        
+        return name.includes(searchLower) || login.includes(searchLower) || process.includes(searchLower);
     });
 
     const getDayName = (dateStr) => {
@@ -82,10 +83,10 @@ const ScheduleGrid = () => {
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                         <input 
                             type="text" 
-                            placeholder="Szukaj pracownika..." 
+                            placeholder="Szukaj po nazwisku, loginie lub procesie..." 
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 transition-all w-64"
+                            className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-indigo-500 transition-all w-72"
                         />
                     </div>
                     <button onClick={fetchWeekly} className="p-2 hover:bg-slate-200 rounded-lg transition-all text-slate-500">
@@ -99,7 +100,7 @@ const ScheduleGrid = () => {
                 <table className="w-full border-collapse">
                     <thead className="sticky top-0 z-20 bg-white shadow-sm">
                         <tr>
-                            <th className="p-4 bg-slate-50 border-b border-r border-slate-100 text-[10px] font-black uppercase text-slate-400 w-64 sticky left-0 z-30">
+                            <th className="p-4 bg-slate-50 border-b border-r border-slate-100 text-[10px] font-black uppercase text-slate-400 w-72 sticky left-0 z-30 text-left">
                                 Pracownik ({filteredWorkers.length})
                             </th>
                             {safeDates.map(date => (
@@ -113,13 +114,21 @@ const ScheduleGrid = () => {
                         {filteredWorkers.map((worker) => (
                             <tr key={worker.login} className="border-b border-slate-50 hover:bg-slate-50 transition-colors group">
                                 <td className="p-4 border-r border-slate-100 sticky left-0 bg-white group-hover:bg-slate-50 z-10 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
-                                    <div className="flex flex-col">
-                                        <span className="font-black text-slate-800 uppercase leading-none mb-1">{worker.full_name}</span>
-                                        <span className="text-[9px] font-bold text-slate-400 tracking-tighter">{worker.login}</span>
+                                    <div className="flex flex-col items-start">
+                                        <span className="font-black text-slate-800 uppercase leading-none mb-1.5">{worker.full_name}</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[9px] font-bold text-slate-400 tracking-tighter">{worker.login}</span>
+                                            
+                                            {/* ZNACZEK Z NAZWĄ PROCESU */}
+                                            {worker.process && worker.process !== 'nan' && (
+                                                <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-600 border border-indigo-100">
+                                                    {worker.process}
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </td>
                                 {safeDates.map(date => {
-                                    // Upewniamy się, że sprawdzamy po pełnej dacie (bez czasu)
                                     const dateKey = date.split('T')[0];
                                     const shift = worker.days ? worker.days[dateKey] : null;
                                     const isWeekend = new Date(date).getDay() === 0 || new Date(date).getDay() === 6;

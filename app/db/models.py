@@ -61,66 +61,19 @@ class Schedule(Base):
     is_present = Column(Boolean, default=False)
     group_prefix = Column(String, nullable=True) #prefiks z przypisaniem do dzialu O = Operacja.
     gate = Column(Integer, nullable=True) #bramka, na której odbił się pracownik
-    
+    process = Column(String, nullable=True)
     # To jest kluczowe dla funkcji "upsert" (żeby się nie duplikowało przy ponownym pobraniu)
     __table_args__ = (UniqueConstraint('login', 'work_date', name='uix_login_date'),)
 
+class WorkerSpecialTask(Base):
+    __tablename__ = "worker_special_tasks"
 
-
-class ActiveWork(Base):
-    __tablename__ = "active_works"
-
-    # Klucz główny
     id = Column(Integer, primary_key=True, index=True)
+    login = Column(String, index=True, unique=True) 
+    process = Column(String, index=True)            
+    task_name = Column(String)                      
     
-    # Podstawowe identyfikatory
-    workid = Column(String, unique=True, index=True)
-    ordernum = Column(String, index=True)
-    shipmentid = Column(String, index=True)
-    loadid = Column(String, index=True)
-    waveid = Column(String, index=True)
-    workpoolid = Column(String, index=True)
-    
-    # Statusy i typy
-    workstatus = Column(String)  
-    worktranstype = Column(String)
-    
-    # Ilości
-    whasalesitemqty = Column(Float)
-    whasalesitemcount = Column(Integer)
-    whaworkitemsvolume = Column(Float)
-    whaworkitemsweight = Column(Float)
-    
-    # Daty i Czas 
-    whashippingdaterequested = Column(DateTime(timezone=True), nullable=True)
-    whasaleswarehouseshippingdate = Column(DateTime(timezone=True), nullable=True)
-    workcreateddatetime = Column(DateTime(timezone=True), nullable=True)
-    workinprocessutcdatetime = Column(DateTime(timezone=True), nullable=True)
-    workclosedutcdatetime = Column(DateTime(timezone=True), nullable=True)
-    
-    # Operacyjne
-    lockeduser = Column(String, nullable=True) # UserId
-    whaadditionalzone2 = Column(String, nullable=True) # Strefa
-    whacarriercode = Column(String, nullable=True)
-    whashipmentspecid = Column(String, nullable=True)
-    targetlicenseplateid = Column(String, nullable=True)
-    inventlocationid = Column(String)
-    inventsiteid = Column(String)
-    
-    # Flagi (Boolean)
-    workismultisku = Column(String) # D365 często zwraca "Yes"/"No"
-    frozen = Column(String)
-    
-    # Pozostałe
-    workpriority = Column(Integer)
-    worktemplatecode = Column(String)
-    containerid = Column(String)
-    clusterid = Column(String)
-    dataareaid = Column(String) # Firma (np. 'merx')
-    
-    # Meta-dane synchronizacji
-    sinkmodifiedon = Column(DateTime(timezone=True), nullable=True)
-    lastprocessedchange_datetime = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 
@@ -181,17 +134,7 @@ class ZoneConstraint(Base):
     )
 
 
-class SalesTable(Base):
-    __tablename__ = "salestable"
-    id = Column(Integer, primary_key=True, index=True)
-    salesordernumber = Column(String, index=True)
-    orderedsalesquantity = Column(Float)
-    shippingwarehouseid = Column(String)
-    linenumber = Column(Integer)
-    itemnumber = Column(String)
-    orderinventorystatusid = Column(String)
-    salesorderlinestatus = Column(String)
-    requestedshippingdate = Column(DateTime)
+
     
     
 

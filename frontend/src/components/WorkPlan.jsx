@@ -3,31 +3,22 @@ import axios from 'axios';
 import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Briefcase } from 'lucide-react';
 import { usePolling } from '../hooks/usePolling';
 
-// ZMIANA: Zaktualizowana struktura ZONES o nową grupę zadań menadżerskich
+// ZMIANA: Zostawiamy krótkie ID, a dodatkowe teksty wstawiamy TYLKO do "label"
 const ZONES = [
     { id: 'receiving', label: 'Receiving' },
     { id: 'putaway', label: 'Putaway' },
-    { 
-        id: 'picking_group', 
-        label: 'Picking', 
-        subZones: [
-            { id: 'picking_mezz_m0', label: 'MEZZ M0' },
-            { id: 'picking_mezz_m1', label: 'MEZZ M1' },
-            { id: 'picking_mezz_m2', label: 'MEZZ M2' },
-            { id: 'picking_rack', label: 'RACK' }
-        ]
-    },
+    { id: 'picking', label: 'Picking' },
     { id: 'packing', label: 'Packing' },
     { id: 'sorting', label: 'Sorting' },
     { 
         id: 'manager_group', 
-        label: 'Manager Tasks',
+        label: 'Special Tasks',
         subZones: [
-            { id: 'task_cleaning', label: 'Sprzątanie' },
-            { id: 'task_filler', label: 'Wypełniacz' },
-            { id: 'task_waterspider', label: 'Water-spider' },
-            { id: 'task_training', label: 'Szkolenie' },
-            { id: 'task_relocation', label: 'Relokacja' }
+            { id: 'rozładunek', label: 'Rozładunek (Przyjęcia)' },
+            { id: 'water spider', label: 'Water Spider (Pakowanie)' },
+            { id: 'produkcja wypełniacza', label: 'Wypełniacz (Pakowanie)' },
+            { id: 'załadunki', label: 'Załadunki (Wysyłka)' },
+            { id: 'sprzątanie', label: 'Sprzątanie (Przyjęcia)' }
         ]
     }
 ];
@@ -40,11 +31,10 @@ const WorkPlan = () => {
     
     const [pool, setPool] = useState([]);
     
-    // ZMIANA: Zaktualizowany stan początkowy o 5 nowych stref i usunięto starą
+    // ZMIANA: Przywrócone krótkie klucze (muszą idealnie pasować do ID z ZONES)
     const [zones, setZones] = useState({
-        receiving: [], putaway: [], packing: [], sorting: [], 
-        picking_mezz_m0: [], picking_mezz_m1: [], picking_mezz_m2: [], picking_rack: [],
-        task_cleaning: [], task_filler: [], task_waterspider: [], task_training: [], task_relocation: []
+        receiving: [], putaway: [], picking: [], packing: [], sorting: [], 
+        'rozładunek': [], 'water spider': [], 'produkcja wypełniacza': [], 'załadunki': [], 'sprzątanie': []
     });
 
     const getBestSkill = (worker) => {
@@ -65,10 +55,10 @@ const WorkPlan = () => {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
+            // ZMIANA: Krótkie klucze w słowniku resetującym!
             const newZones = { 
-                receiving: [], putaway: [], packing: [], sorting: [], 
-                picking_mezz_m0: [], picking_mezz_m1: [], picking_mezz_m2: [], picking_rack: [],
-                task_cleaning: [], task_filler: [], task_waterspider: [], task_training: [], task_relocation: []
+                receiving: [], putaway: [], picking: [], packing: [], sorting: [], 
+                'rozładunek': [], 'water spider': [], 'produkcja wypełniacza': [], 'załadunki': [], 'sprzątanie': []
             };
             const newPool = [];
 
@@ -76,9 +66,10 @@ const WorkPlan = () => {
                 allWorkers.forEach(worker => {
                     let currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
                     
-                    // Bezpieczna migracja starych rekordów
-                    if (currentTask === 'picking') currentTask = 'picking_mezz_m0';
-                    if (currentTask === 'manager_tasks') currentTask = 'task_cleaning';
+                    // Bezpieczna migracja starych rekordów z bazy danych
+                    if (currentTask.startsWith('picking_')) currentTask = 'picking';
+                    if (currentTask === 'manager_tasks' || currentTask === 'task_cleaning') currentTask = 'sprzątanie';
+                    if (currentTask === 'task_waterspider') currentTask = 'water spider';
 
                     if (currentTask !== 'unassigned' && newZones[currentTask] !== undefined) {
                         newZones[currentTask].push(worker);
@@ -201,12 +192,8 @@ const WorkPlan = () => {
             pool.forEach(w => {
                 let suggestedTask = suggestions[String(w.worker_login)];
                 
-                // Migracja AI
-                if (suggestedTask && suggestedTask.toLowerCase().trim() === 'picking') {
-                    suggestedTask = 'picking_mezz_m0';
-                }
-                if (suggestedTask && suggestedTask.toLowerCase().trim() === 'manager_tasks') {
-                    suggestedTask = 'task_cleaning';
+                if (suggestedTask && suggestedTask.toLowerCase().trim().startsWith('picking')) {
+                    suggestedTask = 'picking';
                 }
 
                 if (suggestedTask && newZones[suggestedTask] !== undefined) {
@@ -330,11 +317,10 @@ const WorkPlan = () => {
                 <div className="flex-1 flex gap-2 overflow-hidden">
                     {ZONES.map(zone => {
                         
-                        // Renderowanie GRUP z kolumnami (np. Picking lub Manager Tasks)
+                        // Renderowanie GRUP z kolumnami (np. Manager Tasks)
                         if (zone.subZones) {
                             const totalWorkersInGroup = zone.subZones.reduce((sum, sz) => sum + (zones[sz.id]?.length || 0), 0);
                             
-                            // Dynamiczne style (Niebieski dla Picking, Bursztynowy dla Managera)
                             const isManager = zone.id === 'manager_group';
                             const bgClass = isManager ? 'bg-amber-50/40 border-amber-200' : 'bg-indigo-50/40 border-indigo-200';
                             const headerBgClass = isManager ? 'bg-amber-100/60 border-amber-200' : 'bg-indigo-100/60 border-indigo-200';

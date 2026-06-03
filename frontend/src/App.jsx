@@ -12,6 +12,8 @@ import D365Sync from './components/D365Sync';
 import TVBoard from './tv/TVBoard'; 
 // 2. IMPORT NOWEGO KOMPONENTU LIVE STATUS
 import LiveStatus from './components/LiveStatus';
+// 3. IMPORT NOWEGO KOMPONENTU INDIRECTS
+import SpecialTasksManager from './components/SpecialTasksManager';
 
 function App() {
   // =========================================================================
@@ -43,6 +45,7 @@ function App() {
       case 'live':      return 'Live Operations Status';
       case 'sync':      return 'D365 Data Synchronization';
       case 'productivity': return 'Productivity Metrics';
+      case 'indirects': return 'Special Tasks (Indirects)'; // <-- NOWY TYTUŁ
       default:          return 'Adamów Operational Node';
     }
   };
@@ -123,14 +126,22 @@ function App() {
             </div>
           )}
 
-          {/* EKRAN DLA MODUŁÓW W BUDOWIE - Dodany warunek wykluczający 'live' */}
+          {/* Widok: INDIRECTS (NOWOŚĆ) */}
+          {activeTab === 'indirects' && (
+            <div className="absolute inset-0 overflow-auto p-8 bg-slate-50/50 animate-in fade-in duration-300">
+               <SpecialTasksManager />
+            </div>
+          )}
+
+          {/* EKRAN DLA MODUŁÓW W BUDOWIE */}
           {activeTab !== 'dashboard' && 
            activeTab !== 'plan' && 
            activeTab !== 'dane' && 
            activeTab !== 'schedule' && 
            activeTab !== 'productivity' && 
            activeTab !== 'sync' && 
-           activeTab !== 'live' && (
+           activeTab !== 'live' && 
+           activeTab !== 'indirects' && ( // <-- Dodane wykluczenie indirects
             <div className="flex flex-col items-center justify-center h-full text-slate-300 bg-white/50">
               <Bot size={64} className="mb-4 opacity-10" />
               <h2 className="text-2xl font-black uppercase tracking-widest opacity-20">

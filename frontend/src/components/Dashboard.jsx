@@ -1,29 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api'; 
-import { BarChart3, CalendarDays, RefreshCw, Box, Layers, X, Users, UserMinus, Upload } from 'lucide-react';
+import { BarChart3, CalendarDays, RefreshCw, Box, Layers, X, Users, UserMinus, Upload, Clock } from 'lucide-react';
 import { usePolling } from '../hooks/usePolling';
 
 const Dashboard = () => {
     const getTodayDate = () => new Date().toISOString().split('T')[0];
     
-    // --- NOWE STANY DO EXCELA ---
     const fileInputRef = useRef(null); 
     const [isUploading, setIsUploading] = useState(false); 
 
     const [date, setDate] = useState(getTodayDate());
+    // NOWOŚĆ: Stan wybranej zmiany (domyślnie 'all' lub '1')
+    const [shift, setShift] = useState('all'); 
+    
     const [hourlyData, setHourlyData] = useState([]);
     const [activeWorkers, setActiveWorkers] = useState(0); 
     const [inactiveWorkers, setInactiveWorkers] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [activeModal, setActiveModal] = useState(null);
 
+    // ZMIANA: Przekazujemy shift do endpointów active/inactive workers
     const fetchDashboardData = async () => {
         setIsLoading(true);
         try {
             const [forecastRes, activeRes, inactiveRes] = await Promise.all([
                 api.get(`/analytics/forecast/hourly?target_date=${date}`).catch(() => ({ data: [] })),
-                api.get(`/plan/active-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } })),
-                api.get(`/plan/inactive-workers?target_date=${date}`).catch(() => ({ data: { count: 0 } }))
+                api.get(`/plan/active-workers?target_date=${date}&shift=${shift}`).catch(() => ({ data: { count: 0 } })),
+                api.get(`/plan/inactive-workers?target_date=${date}&shift=${shift}`).catch(() => ({ data: { count: 0 } }))
             ]);
             
             setHourlyData(forecastRes.data || []);
@@ -36,12 +39,13 @@ const Dashboard = () => {
         }
     };
 
+    // ZMIANA: Tło odświeżania również uwzględnia wybraną zmianę
     const fetchDashboardSilent = async () => {
         try {
             const [forecastRes, activeRes, inactiveRes] = await Promise.all([
                 api.get(`/analytics/forecast/hourly?target_date=${date}`),
-                api.get(`/plan/active-workers?target_date=${date}`),
-                api.get(`/plan/inactive-workers?target_date=${date}`)
+                api.get(`/plan/active-workers?target_date=${date}&shift=${shift}`),
+                api.get(`/plan/inactive-workers?target_date=${date}&shift=${shift}`)
             ]);
             
             setHourlyData(forecastRes.data || []);
@@ -52,15 +56,13 @@ const Dashboard = () => {
         }
     };
 
+    // ZMIANA: useEffect reaguje teraz na zmianę daty ORAZ zmianę (shift)
     useEffect(() => {
         fetchDashboardData();
-    }, [date]);
+    }, [date, shift]);
 
     usePolling(fetchDashboardSilent, 15000);
 
-    // =========================================================================
-    // OBSŁUGA IMPORTU EXCELA
-    // =========================================================================
     const handleExcelUpload = async (event) => {
         const file = event.target.files[0];
         if (!file) return;
@@ -94,7 +96,6 @@ const Dashboard = () => {
         }
     };
 
-    // --- BEZPIECZNE RZUTOWANIE NA LICZBY (Zabezpieczenie przed NaN) ---
     const total1F = hourlyData.reduce((sum, h) => sum + (Number(h.yf) || 0), 0);
     const total1P = hourlyData.reduce((sum, h) => sum + (Number(h.yp) || 0), 0);
     const totalAll = total1F + total1P;
@@ -130,6 +131,21 @@ const Dashboard = () => {
                         <span className="hidden md:inline">{isUploading ? 'Wgrywanie...' : 'Import Master Excel'}</span>
                     </button>
 
+                    {/* NOWOŚĆ: SELEKTOR ZMIANY BAZUJĄCY NA GRAFIKU */}
+                    <div className="flex items-center bg-[#151923] p-1 rounded-lg border border-slate-700">
+                        <Clock size={14} className="text-indigo-400 ml-2" />
+                        <select 
+                            value={shift} 
+                            onChange={e => setShift(e.target.value)} 
+                            className="bg-transparent text-[10px] font-black px-2 py-1 outline-none text-slate-300 cursor-pointer uppercase"
+                        >
+                            <option value="all" className="bg-[#151923]">Wszystkie zmiany</option>
+                            <option value="1" className="bg-[#151923]">Zmiana I</option>
+                            <option value="2" className="bg-[#151923]">Zmiana II</option>
+                            <option value="3" className="bg-[#151923]">Zmiana III</option>
+                        </select>
+                    </div>
+
                     <div className="flex items-center bg-[#151923] p-1 rounded-lg border border-slate-700">
                         <CalendarDays size={14} className="text-indigo-400 ml-2" />
                         <input 
@@ -148,11 +164,13 @@ const Dashboard = () => {
             {/* --- SEKCJA KAFELKÓW KPI --- */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 
-                {/* ZIELONE OKIENKO - OBECNI NA HALI */}
+                {/* ZIELONE OKIENKO - OBECNI NA HALI W RAMACH ZMIANY */}
                 <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl p-6 shadow-lg shadow-emerald-200/50 text-white flex flex-col justify-between relative overflow-hidden group border border-emerald-400">
                     <div className="flex justify-between items-start relative z-10">
                         <div>
-                            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-100 mb-1 drop-shadow-sm">Headcount (Na Hali)</p>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-emerald-100 mb-1 drop-shadow-sm">
+                                Headcount ({shift === 'all' ? 'Pełna doba' : `Zmiana ${shift}`})
+                            </p>
                             <h3 className="text-5xl font-black tracking-tight drop-shadow-md">{activeWorkers}</h3>
                         </div>
                         <div className="bg-white/20 p-3 rounded-xl backdrop-blur-sm border border-white/10 shadow-inner">
@@ -162,18 +180,20 @@ const Dashboard = () => {
                     <div className="mt-6 flex items-center gap-2 text-[10px] font-bold text-emerald-50 relative z-10">
                         <span className="bg-emerald-700/50 px-2 py-1 rounded-md border border-emerald-600/50 shadow-sm flex items-center gap-1.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-                            Live Sync
+                            Obecni wg grafiku
                         </span>
                         <span>Aktualizowane z bramek</span>
                     </div>
                     <Users size={140} className="absolute -bottom-8 -right-8 text-white opacity-10 group-hover:scale-110 transition-transform duration-700" />
                 </div>
 
-                {/* CZERWONE OKIENKO - NIEOBECNI / WYSZLI */}
+                {/* CZERWONE OKIENKO - NIEOBECNI W RAMACH ZMIANY */}
                 <div className="bg-gradient-to-br from-rose-500 to-rose-600 rounded-2xl p-6 shadow-lg shadow-rose-200/50 text-white flex flex-col justify-between relative overflow-hidden group border border-rose-400">
                     <div className="flex justify-between items-start relative z-10">
                         <div>
-                            <p className="text-[10px] font-black uppercase tracking-widest text-rose-100 mb-1 drop-shadow-sm">Nieobecni / Wyszli</p>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-rose-100 mb-1 drop-shadow-sm">
+                                Nieobecni ({shift === 'all' ? 'Pełna doba' : `Zmiana ${shift}`})
+                            </p>
                             <h3 className="text-5xl font-black tracking-tight drop-shadow-md">{inactiveWorkers}</h3>
                         </div>
                         <div className="bg-white/20 p-3 rounded-xl backdrop-blur-sm border border-white/10 shadow-inner">
@@ -183,9 +203,9 @@ const Dashboard = () => {
                     <div className="mt-6 flex items-center gap-2 text-[10px] font-bold text-rose-50 relative z-10">
                         <span className="bg-rose-700/50 px-2 py-1 rounded-md border border-rose-600/50 shadow-sm flex items-center gap-1.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></div>
-                            Live Sync
+                            Brak odbicia
                         </span>
-                        <span>Z zaplanowanych na dziś</span>
+                        <span>Z zaplanowanych na tej zmianie</span>
                     </div>
                     <UserMinus size={140} className="absolute -bottom-8 -right-8 text-white opacity-10 group-hover:scale-110 transition-transform duration-700" />
                 </div>
@@ -231,7 +251,6 @@ const Dashboard = () => {
                         <div>
                             <div className="h-24 flex items-end gap-1 px-2 border-b border-slate-100 overflow-x-auto pb-1 custom-scrollbar">
                                 {hourlyData.map((h) => {
-                                    // Zabezpieczamy wartości dla paska wykresu
                                     const valF = Number(h.yf) || 0;
                                     const valP = Number(h.yp) || 0;
                                     const h1F = maxVal > 0 ? (valF / maxVal) * 100 : 0;
@@ -293,7 +312,6 @@ const Dashboard = () => {
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700">
                                         {hourlyData.map((h) => {
-                                            // Bezpieczne rzutowanie dla okna modalnego
                                             const currentPcs = activeModal === '1F' ? (Number(h.yf) || 0) : (Number(h.yp) || 0);
                                             const startHour = h.hour;
                                             const endHour = `${String((parseInt(startHour.split(':')[0]) + 1) % 24).padStart(2, '0')}:00`;
@@ -322,7 +340,6 @@ const Dashboard = () => {
                     </div>
                 </div>
             )}
-            
         </div>
     );
 };

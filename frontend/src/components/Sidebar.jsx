@@ -1,5 +1,6 @@
 import React from 'react';
-import { LayoutDashboard, Calendar, Activity, Database, Server, Cpu, Settings, LogOut , Table, Zap} from 'lucide-react';
+// ZMIANA: Dopisano 'Wrench' na końcu listy importów!
+import { LayoutDashboard, Calendar, Activity, Database, Server, Cpu, Settings, LogOut, Table, Zap, Wrench } from 'lucide-react';
 
 const Sidebar = ({ activeTab, setActiveTab }) => {
   // Tutaj definiujemy TYLKO przyciski menu
@@ -11,7 +12,8 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
     { id: 'dane', icon: <Server size={20} />, title: 'System Data' },
     { id: 'ai', icon: <Cpu size={20} />, title: 'AI Engine' },
     { id: 'schedule', icon: <Table size={20} />, title: 'Full Schedule' },
-    { id: 'productivity', icon: <Zap size={20} />, title: 'Productivity' }
+    { id: 'productivity', icon: <Zap size={20} />, title: 'Productivity' },
+    { id: 'indirects', icon: <Wrench size={20} />, title: 'Special Tasks' }
   ];
 
   const handleLogout = () => {

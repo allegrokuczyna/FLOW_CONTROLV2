@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, delete
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from datetime import date
@@ -10,8 +12,8 @@ from contextlib import asynccontextmanager
 
 
 from app.db.database import get_db
-from app.db.models import User, Schedule, ShiftAssignment # <-- TUTAJ: Dodano wymagane modele
-from app.db.schemas import AssignmentSchema, DailyConstraintsSave, PresenceUpdate
+from app.db.models import User, Schedule, ShiftAssignment, WorkerSpecialTask 
+from app.db.schemas import AssignmentSchema, DailyConstraintsSave, PresenceUpdate, SpecialTaskInput
 from app.api.deps import get_current_user
 from app.services.sync_service import (
     get_daily_plan, save_daily_plan, get_weekly_schedule, 
@@ -159,13 +161,33 @@ async def update_worker_presence(payload: PresenceUpdate, db: AsyncSession = Dep
 
 
 @router.get("/plan/active-workers")
-async def get_active_workers_query(target_date: date = None, db: AsyncSession = Depends(get_db)):
-    """Pobiera listę pracowników obecnych na magazynie wraz z ich sumą."""
+async def get_active_workers_query(
+    target_date: date = None, 
+    shift: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db)
+):
+    """Pobiera listę pracowników obecnych na magazynie wraz z ich sumą, z uwzględnieniem zmiany."""
     if target_date is None:
         target_date = date.today()
         
     try:
+        
         workers_list = await get_active_workers(db, target_date)
+        
+        
+        if shift and shift.lower() != "all":
+           
+            def match_shift(planned_shift_str):
+                s = str(planned_shift_str).strip()
+                if "6-14" in s: return "1"
+                if "14-22" in s: return "2"
+                if "22-06" in s: return "3"
+                return s
+
+            workers_list = [
+                w for w in workers_list 
+                if match_shift(getattr(w, 'planned_shift', '')) == str(shift)
+            ]
         
         return {
             "count": len(workers_list),
@@ -177,18 +199,79 @@ async def get_active_workers_query(target_date: date = None, db: AsyncSession = 
 
 
 @router.get("/plan/inactive-workers")
-async def get_inactive_workers_query(target_date: date = None, db: AsyncSession = Depends(get_db)):
-    """Pobiera listę pracowników nieobecnych na magazynie wraz z ich sumą."""
+async def get_inactive_workers_query(
+    target_date: date = None, 
+    shift: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db)
+):
+    """Pobiera listę pracowników nieobecnych na magazynie wraz z ich sumą, z uwzględnieniem zmiany."""
     if target_date is None:
         target_date = date.today()
         
     try:
+        
         workers_list = await get_inactive_workers(db, target_date)
         
+        
+        if shift and shift.lower() != "all":
+            def match_shift(planned_shift_str):
+                s = str(planned_shift_str).strip()
+                if "6-14" in s: return "1"
+                if "14-22" in s: return "2"
+                if "22-06" in s: return "3"
+                return s
+
+            workers_list = [
+                w for w in workers_list 
+                if match_shift(getattr(w, 'planned_shift', '')) == str(shift)
+            ]
+            
         return {
             "count": len(workers_list),
             "workers": workers_list
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+# ==============================================================================
+# SEKCJA: ZARZĄDZANIE ZADANIAMI SPECJALNYMI (INDIRECTS)
+# ==============================================================================
+
+@router.get("/plan/special-tasks")
+async def get_special_tasks(db: AsyncSession = Depends(get_db)):
+    """Pobiera listę pracowników z przypisanymi zadaniami specjalnymi."""
+    stmt = select(WorkerSpecialTask)
+    res = await db.execute(stmt)
+    tasks = res.scalars().all()
+    return {"status": "success", "data": tasks}
+
+
+# ZMIANA: Dodano /plan/ na początku ścieżki
+@router.post("/plan/special-tasks")
+async def upsert_special_task(payload: SpecialTaskInput, db: AsyncSession = Depends(get_db)):
+    """Dodaje lub aktualizuje specjalną rolę pracownika (UPSERT)."""
+    stmt = insert(WorkerSpecialTask).values(
+        login=payload.login.strip(),
+        process=payload.process.strip(),
+        task_name=payload.task_name.strip()
+    ).on_conflict_do_update(
+        index_elements=['login'], 
+        set_={
+            "process": payload.process.strip(), 
+            "task_name": payload.task_name.strip()
+        }
+    )
+    await db.execute(stmt)
+    await db.commit()
+    return {"status": "success", "message": "Zaktualizowano rolę specjalną"}
+
+
+# ZMIANA: Dodano /plan/ na początku ścieżki
+@router.delete("/plan/special-tasks/{login}")
+async def remove_special_task(login: str, db: AsyncSession = Depends(get_db)):
+    """Usuwa pracownika z listy ról specjalnych."""
+    stmt = delete(WorkerSpecialTask).where(WorkerSpecialTask.login == login)
+    await db.execute(stmt)
+    await db.commit()
+    return {"status": "success", "message": "Usunięto rolę specjalną"}
