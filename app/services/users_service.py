@@ -25,3 +25,6 @@ async def register_new_user(db: AsyncSession, user_data: UserCreate):
     await db.commit()
     await db.refresh(new_user)
     return new_user
+
+
+

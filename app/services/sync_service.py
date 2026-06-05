@@ -1,4 +1,5 @@
 import io
+import token
 import httpx
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -590,3 +591,179 @@ async def sync_active_works_from_d365(db: AsyncSession):
     except Exception as e:
         await db.rollback()
         print(f"❌ [BŁĄD APLIKACJI] Błąd synchronizacji prac: {str(e)}")
+
+
+
+import httpx
+from datetime import datetime
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.auth import get_d365_access_token
+from app.db.models import InboundMezzanineWorks, InventoryQty
+
+async def fetch_and_save_workpool_volumes(db: AsyncSession):
+    token = await get_d365_access_token()
+
+    base_url = settings.D365_URL.rstrip('/')
+    d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+    # 1. Dokładnie ten sam payload co w działającym teście
+    payload = {
+        "_request": {
+            "Message": {
+                "RequestID": "fastapi-sandbox-sync",
+                "RequestType": "GetRows",
+                "RequestService": "QRDE",
+                "RequestSource": "FastAPI-Test"     
+            },
+            "EndpointParamName": "InboundFlowQuery", 
+            "QueryValues": []
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            response.raise_for_status() 
+            data = response.json()
+
+        # Wyciągamy tablicę Rows
+        rows = data.get("Rows") or []
+        
+    except httpx.HTTPStatusError as exc:
+        print(f"❌ Błąd silnika D365: {exc.response.text}")
+        raise exc
+    except Exception as e:
+        print(f"❌ Błąd połączenia lub pobierania danych: {e}")
+        raise e
+
+    if not rows:
+        print("⚠️ Brak danych z QRDE (Zwróciło pustą tablicę lub null).")
+        return 0
+
+    values = []
+
+    # 2. Parsowanie dopasowane 1:1 do Twojego JSON-a
+    for row in rows:
+        columns = row.get("Columns") or []
+        
+        # Tworzymy płaski słownik z { "FieldName": "Value" }
+        row_dict = {}
+        for col in columns:
+            field_name = col.get("FieldName")
+            if field_name:
+                row_dict[field_name] = col.get("Value")
+        
+        # Wyciągamy wartości dokładnie po kluczach z JSON-a
+        workpool_id = row_dict.get("workpoolid")
+        
+        if not workpool_id:
+            continue
+            
+        values.append({
+            "work_pool_id": str(workpool_id),
+            "work_count": int(row_dict.get("IloscPrac") or 0),
+            "item_qty": float(row_dict.get("IloscSztuk") or 0.0)
+        })
+
+    if not values:
+        return 0
+
+    # 3. Zapis do PostgreSQL
+    stmt = insert(InboundMezzanineWorks).values(values)
+    
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['work_pool_id'], 
+        set_={
+            "work_count": stmt.excluded.work_count,
+            "item_qty": stmt.excluded.item_qty,
+            "updated_at": datetime.utcnow()
+        }
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+    
+    print(f"✅ Pomyślnie zaktualizowano {len(values)} procesów z QRDE w bazie PostgreSQL.")
+    return len(values)
+
+
+#inventsum towarow w lokalizacjach przyjecia 
+async def fetch_and_save_inventory_qty(db: AsyncSession):
+  
+    token = await get_d365_access_token()
+    base_url = settings.D365_URL.rstrip('/')
+    d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+    payload = {
+        "_request": {
+            "Message": {
+                "RequestID": "fastapi-inventory-sync",
+                "RequestType": "GetRows",
+                "RequestService": "QRDE",
+                "RequestSource": "FastAPI-Sync"
+            },
+            
+            "EndpointParamName": "InbRecQty", 
+            "QueryValues": []
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            response.raise_for_status() 
+            data = response.json()
+
+        rows = data.get("Rows") or []
+        
+    except Exception as e:
+        print(f"❌ Błąd pobierania InventoryQty: {e}")
+        raise e
+
+    if not rows:
+        print("⚠️ Brak danych Inventory z QRDE.")
+        return 0
+
+    
+    row = rows[0] 
+    columns = row.get("Columns", [])
+    row_dict = {col.get("FieldName"): col.get("Value") for col in columns if "FieldName" in col}
+    
+    
+    total_qty = int(float(row_dict.get("availphysical") or 0))
+
+    
+    values = [{
+        "id": 1,
+        "available_physical": total_qty
+    }]
+
+    
+    stmt = insert(InventoryQty).values(values)
+    
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['id'], 
+        set_={
+            "available_physical": stmt.excluded.available_physical,
+            "updated_at": datetime.utcnow()
+        }
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+    
+    print(f"✅ Pomyślnie zaktualizowano stan technicznych przyjęć: {total_qty} szt.")
+    return 1

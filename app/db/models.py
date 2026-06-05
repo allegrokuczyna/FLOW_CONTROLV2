@@ -137,4 +137,23 @@ class ZoneConstraint(Base):
 
     
     
+#ilosc prac przenosnika mezaniny
+class InboundMezzanineWorks(Base):
+    __tablename__ = "inbound_mezzanine_works"
 
+    id = Column(Integer, primary_key=True, index=True)
+    work_pool_id = Column(String, unique=True, index=True)
+    work_count = Column(Integer, default=0)
+    item_qty = Column(Float, default=0.0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+#ilosc sztuk w lokalizacjach 'techniczne przyjecia'
+class InventoryQty(Base):
+    __tablename__ = "inventory_qty"
+
+    id = Column(Integer, primary_key=True, index=True)
+    available_physical = Column(Integer, default=0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

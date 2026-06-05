@@ -11,7 +11,7 @@ router = APIRouter(prefix="/test-d365", tags=["Testowanie D365 (Raw Data)"])
 
 # testowe æadanie, dowolny endpoint w kurde
 class D365TestRequest(BaseModel):
-    endpoint_param_name: str = "SalesWithoutShippingType"
+    endpoint_param_name: str = "InboundFlowQuery"
     query_values: Optional[List[Any]] = []
 
 @router.post("/get-rows")
