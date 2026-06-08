@@ -1,3 +1,4 @@
+import traceback
 import asyncio
 import sys
 import selectors
@@ -15,7 +16,9 @@ from app.services.gate_sync import poll_gates_and_update  # Agent SSRS
 from app.services.sync_service import (
     fetch_and_save_workpool_volumes,
     fetch_and_save_inventory_qty,
-    fetch_and_save_outbound_works
+    fetch_and_save_outbound_works,
+    fetch_and_save_packing_qty,
+    fetch_and_save_sort_qty
 )
 
 if sys.platform == 'win32':
@@ -62,21 +65,23 @@ async def lifespan(app: FastAPI):
         # ==============================================================================
         # 4. Uruchomienie harmonogramu dla AI & Live View (Automatycznie co 15 min)
         # ==============================================================================
-        print("🕒 Uruchamianie zadań w tle (Wolumeny magazynowe dla AI co 15 min)...")
         async def live_volumes_scheduler_loop():
-            await asyncio.sleep(15) # Startuje chwilę po głównym D365, żeby nie dusić sieci naraz
+            await asyncio.sleep(15) 
             while True:
                 try:
                     async with AsyncSessionLocal() as live_session:
-                        print("🔄 [AI SYNC] Rozpoczynam pobieranie żywych wolumenów (Inbound, Inventory, Outbound)...")
+                        print("🔄 [AI SYNC] Rozpoczynam pobieranie żywych wolumenów...")
                         await fetch_and_save_workpool_volumes(live_session)
-                        await fetch_and_save_inventory_qty(live_session)
+                        await fetch_and_save_inventory_qty(live_session) 
                         await fetch_and_save_outbound_works(live_session)
+                        await fetch_and_save_packing_qty(live_session)
+                        await fetch_and_save_sort_qty(live_session)
                         print("✅ [AI SYNC] Pobieranie wolumenów zakończone sukcesem.")
                 except Exception as e:
-                    print(f"❌ [AI SYNC] Błąd podczas synchronizacji wolumenów: {e}")
+                    print(f"❌ [AI SYNC] Błąd podczas synchronizacji wolumenów: {repr(e)}")
+                    traceback.print_exc()
                 
-                await asyncio.sleep(900)  # 15 minut = 900 sekund
+                await asyncio.sleep(900)
 
         live_volumes_task = asyncio.create_task(live_volumes_scheduler_loop())
 

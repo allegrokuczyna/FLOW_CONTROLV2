@@ -160,7 +160,7 @@ class InventoryQty(Base):
 
 
 
-
+#ilosci sztuk do kompletacji
 class OutboundWork(Base):
     __tablename__ = "outbound_works"
 
@@ -173,3 +173,22 @@ class OutboundWork(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     
+#ilosc sztuk do pakowania na ladm_out i pack_Zone1
+class PackingWork(Base):
+    __tablename__ = "packing_works"
+
+    id = Column(Integer, primary_key=True, index=True)
+    value = Column(Float, default=0.0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+
+#ilosci paczek do sortowania
+class SortWork(Base):
+    __tablename__ = "sort_works"
+
+    id = Column(Integer, primary_key=True, index=True)
+    qty = Column(Float, default=0.0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.now)

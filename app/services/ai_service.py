@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, date
 
 from app.db.models import Schedule, WorkerPerformance, ZoneConstraint
-from app.db.models import InboundMezzanineWorks, InventoryQty, OutboundWork
+from app.db.models import InboundMezzanineWorks, InventoryQty, OutboundWork, PackingWork, SortWork
 from app.services.sync_service import get_shift_number
 
 MODEL_JSON = "qwen2:0.5b"
@@ -30,11 +30,17 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
     inv_row = (await db.execute(select(InventoryQty.available_physical).where(InventoryQty.id == 1))).scalar_one_or_none()
     putaway_qty = inv_row or 0
     outbound_qty = (await db.execute(select(func.sum(OutboundWork.work_qty)))).scalar() or 0
+    
+    pack_row = (await db.execute(select(PackingWork.value).where(PackingWork.id == 1))).scalar_one_or_none()
+    pack_qty = pack_row or 0
+    
+    sort_row = (await db.execute(select(SortWork.qty).where(SortWork.id == 1))).scalar_one_or_none()
+    sort_qty = sort_row or 0
 
-    print(f"📊 LIVE BACKLOG -> Inbound: {inbound_qty} | Putaway: {putaway_qty} | Outbound: {outbound_qty}")
+    print(f"📊 LIVE BACKLOG -> Inbound: {inbound_qty} | Putaway: {putaway_qty} | Outbound: {outbound_qty} | Pack: {pack_qty} | Sort: {sort_qty}")
 
     # ==============================================================================
-    # 2. POBRANIE REGUŁ BIZNESOWYCH (LIMITÓW) NA DANY DZIEŃ I ZMIANĘ
+    # 2. POBRANIE REGUŁ BIZNESOWYCH (LIMITÓW)
     # ==============================================================================
     constraint_stmt = select(ZoneConstraint).where(ZoneConstraint.target_date == target_date)
     constraints_res = await db.execute(constraint_stmt)
@@ -48,24 +54,16 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
         "Sort": "sorting", "sorting": "sorting"
     }
 
-    # Słownik śledzący limity (min/max) dla każdej strefy
     zone_limits = {}
     for c in constraints:
         react_id = ZONE_TO_REACT_ID.get(c.zone_name)
         if react_id:
-            # Pobieramy min/max dynamicznie w zależności od przekazanego shift_id (1, 2 lub 3)
             min_val = getattr(c, f"s{shift_id}_min", 0) or 0
             max_val = getattr(c, f"s{shift_id}_max", 999) or 999
-            # Zabezpieczenie przed błędem z bazy
             max_val = max(min_val, max_val) 
             
-            zone_limits[react_id] = {
-                "min": min_val,
-                "max": max_val,
-                "current": 0 # to będzie zliczać Python
-            }
+            zone_limits[react_id] = {"min": min_val, "max": max_val, "current": 0}
 
-    
     for default_zone in ["receiving", "putaway", "picking", "packing", "sorting"]:
         if default_zone not in zone_limits:
             zone_limits[default_zone] = {"min": 0, "max": 999, "current": 0}
@@ -74,7 +72,9 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
         f"CURRENT BACKLOG:\n"
         f"- 'receiving': {int(inbound_qty)} items\n"
         f"- 'putaway': {int(putaway_qty)} items\n"
-        f"- 'picking': {int(outbound_qty)} items\n\n"
+        f"- 'picking': {int(outbound_qty)} items\n"
+        f"- 'packing': {int(pack_qty)} items\n"
+        f"- 'sorting': {int(sort_qty)} items\n\n"
         f"HARD CONSTRAINTS (You MUST NOT exceed MAX or go below MIN workers per zone!):\n"
         f"{json.dumps({z: {'min': v['min'], 'max': v['max']} for z, v in zone_limits.items()})}\n"
     )
@@ -120,7 +120,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
             simplified_workers[w["id"]] = [skill_name for skill_name, val in sorted_skills]
 
     # ==============================================================================
-    # 4. PĘTLA CHUNKOWANIA (LLM) - BAZOWY SZKIC
+    # 4. PĘTLA CHUNKOWANIA Z TWARDĄ WERYFIKACJĄ
     # ==============================================================================
     ai_assignments = {}
     worker_items = list(simplified_workers.items())
@@ -140,7 +140,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
             response = ollama.chat(
                 model=MODEL_JSON,
                 messages=[
-                    {'role': 'system', 'content': 'Output ONLY a flat JSON dictionary mapping string IDs to string zone names.'},
+                    {'role': 'system', 'content': 'Output ONLY a flat JSON dictionary mapping string IDs to string zone names. Example: {"worker1": "picking", "worker2": "packing"}'},
                     {'role': 'user', 'content': prompt}
                 ],
                 format='json',
@@ -150,36 +150,44 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
             raw_content = response['message']['content']
             ai_raw_dict = json.loads(raw_content)
 
-            for w_id, suggested_zone in ai_raw_dict.items():
-                if isinstance(suggested_zone, list) and len(suggested_zone) > 0:
-                    suggested_zone = str(suggested_zone[0])
-                matched_react_id = ZONE_TO_REACT_ID.get(str(suggested_zone).lower(), "picking")
-                ai_assignments[w_id] = matched_react_id
+            # TWARDA WERYFIKACJA: Sprawdzamy KAŻDEGO pracownika w paczce
+            for w_id in chunk.keys():
+                if w_id in ai_raw_dict:
+                    suggested_zone = ai_raw_dict[w_id]
+                    if isinstance(suggested_zone, list) and len(suggested_zone) > 0:
+                        suggested_zone = str(suggested_zone[0])
+                    matched_react_id = ZONE_TO_REACT_ID.get(str(suggested_zone).lower(), "picking")
+                    ai_assignments[w_id] = matched_react_id
+                else:
+                    # AI zgubiło login (albo oddało pusty {})! Wrzucamy go tam gdzie ma najlepszy skill
+                    ai_assignments[w_id] = simplified_workers[w_id][0]
 
         except Exception as e:
             print(f"❌ BŁĄD dla paczki {i}: {e}")
             for w_id in chunk.keys():
-                ai_assignments[w_id] = simplified_workers[w_id][0] # Fallback na najlepszy skill
+                ai_assignments[w_id] = simplified_workers[w_id][0]
 
     # ==============================================================================
     # 5. PYTHON ENFORCER (STRAŻNIK LIMITÓW MIN / MAX)
     # ==============================================================================
     print("🛡️ Uruchamiam Python Enforcer (Korekta limitów Min/Max)...")
     
-    # Obliczamy ile AI przypisało do poszczególnych stref
+    # Bezpieczne liczenie obecnych przypisań
     for w_id, zone in ai_assignments.items():
         if zone in zone_limits:
             zone_limits[zone]["current"] += 1
+        else:
+            # Fallback dla nieznanej strefy
+            zone_limits["picking"]["current"] += 1
+            ai_assignments[w_id] = "picking"
 
     # Krok 5A: Redukcja przepełnień (Max constraint)
     for zone, limits in zone_limits.items():
         while limits["current"] > limits["max"]:
-            # Szukamy pracownika w tej strefie o najniższym skilu, żeby go przerzucić
             candidates = [w for w, z in ai_assignments.items() if z == zone]
             if not candidates: break
             
             worker_to_move = candidates[0]
-            # Przesuwamy go do pierwszej strefy, która ma jeszcze miejsce do limitu MAX
             target_zone = next((z for z, l in zone_limits.items() if l["current"] < l["max"]), "picking")
             
             ai_assignments[worker_to_move] = target_zone
@@ -190,8 +198,7 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
     # Krok 5B: Zaspokojenie niedoborów (Min constraint)
     for zone, limits in zone_limits.items():
         while limits["current"] < limits["min"]:
-            # Brakuje nam ludzi w 'zone'. Szukamy kogoś w strefach, które są powyżej swojego MIN
-            candidates = [w for w, z in ai_assignments.items() if z != zone and zone_limits[z]["current"] > zone_limits[z]["min"]]
+            candidates = [w for w, z in ai_assignments.items() if z != zone and z in zone_limits and zone_limits[z]["current"] > zone_limits[z]["min"]]
             
             if not candidates:
                 print(f"⚠️ Nie można spełnić limitu MIN dla strefy {zone} (za mało pracowników na zmianie!)")
@@ -200,7 +207,6 @@ async def generate_ai_assignments(db: AsyncSession, shift_id: str = None, target
             worker_to_move = candidates[0]
             old_zone = ai_assignments[worker_to_move]
             
-            # Re-przypisanie
             ai_assignments[worker_to_move] = zone
             zone_limits[old_zone]["current"] -= 1
             zone_limits[zone]["current"] += 1

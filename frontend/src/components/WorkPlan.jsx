@@ -29,6 +29,9 @@ const WorkPlan = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [isDraft, setIsDraft] = useState(false);
     
+    // NOWY STAN: Przechowuje listę id zaznaczonych pracowników
+    const [selectedWorkers, setSelectedWorkers] = useState([]);
+    
     const [pool, setPool] = useState([]);
     
     // ZMIANA: Przywrócone krótkie klucze (muszą idealnie pasować do ID z ZONES)
@@ -55,7 +58,6 @@ const WorkPlan = () => {
             const response = await axios.get(`/api/plan/workers/${shift}?target_date=${date}`);
             const allWorkers = response.data;
 
-            // ZMIANA: Krótkie klucze w słowniku resetującym!
             const newZones = { 
                 receiving: [], putaway: [], picking: [], packing: [], sorting: [], 
                 'rozładunek': [], 'water spider': [], 'produkcja wypełniacza': [], 'załadunki': [], 'sprzątanie': []
@@ -66,7 +68,6 @@ const WorkPlan = () => {
                 allWorkers.forEach(worker => {
                     let currentTask = worker.task ? worker.task.toLowerCase().trim() : 'unassigned';
                     
-                    // Bezpieczna migracja starych rekordów z bazy danych
                     if (currentTask.startsWith('picking_')) currentTask = 'picking';
                     if (currentTask === 'manager_tasks' || currentTask === 'task_cleaning') currentTask = 'sprzątanie';
                     if (currentTask === 'task_waterspider') currentTask = 'water spider';
@@ -81,6 +82,7 @@ const WorkPlan = () => {
 
             setPool(newPool);
             setZones(newZones);
+            setSelectedWorkers([]); // Czyścimy zaznaczenie przy odświeżeniu
             setIsDraft(false); 
         } catch (error) {
             console.error("❌ Błąd pobierania danych:", error);
@@ -148,48 +150,135 @@ const WorkPlan = () => {
         }
     };
 
-    const handleDragStart = (e, workerId, sourceZone) => {
-        e.dataTransfer.setData('workerId', workerId);
-        e.dataTransfer.setData('sourceZone', sourceZone);
+    // --- SEKCJA MULTI-SELECT DRAG & DROP ---
+    
+    // Kliknięcie w kartę zaznacza ją lub odznacza
+    const toggleWorkerSelection = (workerId) => {
+        setSelectedWorkers(prev => 
+            prev.includes(workerId) 
+            ? prev.filter(id => id !== workerId) 
+            : [...prev, workerId]
+        );
+    };
+
+    const handleDragStart = (e, workerId) => {
+        // Jeśli łapiemy pracownika, który NIE jest zaznaczony, zaznaczamy tylko jego
+        let currentSelection = selectedWorkers;
+        if (!selectedWorkers.includes(workerId)) {
+            currentSelection = [workerId];
+            setSelectedWorkers([workerId]);
+        }
+        
+        // Zapisujemy listę ID jako JSON do drag data
+        e.dataTransfer.setData('selectedWorkers', JSON.stringify(currentSelection));
+        
+        // Efekt wizualny przeciągania wielu elementów (działa w nowszych przeglądarkach)
+        if (currentSelection.length > 1) {
+            const dragIcon = document.createElement('div');
+            dragIcon.innerHTML = `<div style="background:#4f46e5;color:white;padding:4px 8px;border-radius:4px;font-size:10px;font-weight:bold;">Przenosisz ${currentSelection.length} pracowników</div>`;
+            document.body.appendChild(dragIcon);
+            e.dataTransfer.setDragImage(dragIcon, -10, -10);
+            setTimeout(() => document.body.removeChild(dragIcon), 0);
+        }
     };
 
     const handleDrop = (e, targetZone) => {
-        const workerId = e.dataTransfer.getData('workerId');
-        const sourceZone = e.dataTransfer.getData('sourceZone');
-        if (!workerId || sourceZone === targetZone) return;
+        const data = e.dataTransfer.getData('selectedWorkers');
+        if (!data) return;
+        
+        const draggedWorkerIds = JSON.parse(data);
+        if (draggedWorkerIds.length === 0) return;
 
-        let worker;
-        if (sourceZone === 'pool') {
-            worker = pool.find(w => String(w.worker_login) === String(workerId));
-            if (!worker) return;
-            setPool(prev => prev.filter(w => String(w.worker_login) !== String(workerId)));
-        } else {
-            worker = zones[sourceZone].find(w => String(w.worker_login) === String(workerId));
-            if (!worker) return;
-            setZones(prev => ({ ...prev, [sourceZone]: prev[sourceZone].filter(w => String(w.worker_login) !== String(workerId)) }));
-        }
+        // Tymczasowe kontenery na zmodyfikowane dane
+        let updatedPool = [...pool];
+        let updatedZones = { ...zones };
+        let workersToMove = [];
 
-        const updatedWorker = { ...worker, task: targetZone };
+        // 1. Zbieramy wszystkich przeciąganych pracowników z Puli i usuwamy ich stamtąd
+        updatedPool = updatedPool.filter(worker => {
+            const login = String(worker.worker_login);
+            if (draggedWorkerIds.includes(login)) {
+                workersToMove.push(worker);
+                return false;
+            }
+            return true;
+        });
 
+        // 2. Zbieramy wszystkich przeciąganych pracowników ze Stref i usuwamy ich stamtąd
+        Object.keys(updatedZones).forEach(zoneId => {
+            updatedZones[zoneId] = updatedZones[zoneId].filter(worker => {
+                const login = String(worker.worker_login);
+                if (draggedWorkerIds.includes(login)) {
+                    // Tylko jeśli targetZone jest inny niż obecna strefa, w przeciwnym razie nie ruszamy
+                    if (zoneId !== targetZone) {
+                        workersToMove.push(worker);
+                        return false;
+                    } else {
+                        // Jeśli upuścili go tam gdzie był, usuwamy go z listy do przeniesienia
+                        draggedWorkerIds.splice(draggedWorkerIds.indexOf(login), 1);
+                        return true; 
+                    }
+                }
+                return true;
+            });
+        });
+
+        if (workersToMove.length === 0) return;
+
+        // 3. Dodajemy zebranych pracowników do celu
+        const modifiedWorkers = workersToMove.map(w => ({ ...w, task: targetZone }));
+        
         if (targetZone === 'pool') {
-            setPool(prev => [...prev, { ...updatedWorker, task: 'unassigned' }]);
+            setPool([...updatedPool, ...modifiedWorkers.map(w => ({...w, task: 'unassigned'}))]);
+            setZones(updatedZones);
         } else {
-            setZones(prev => ({ ...prev, [targetZone]: [...prev[targetZone], updatedWorker] }));
+            updatedZones[targetZone] = [...updatedZones[targetZone], ...modifiedWorkers];
+            setZones(updatedZones);
+            setPool(updatedPool);
         }
+
+        // Czyścimy zaznaczenie po udanym upuszczeniu
+        setSelectedWorkers([]);
         setIsDraft(true);
     };
 
+    // --- ZAKTUALIZOWANA FUNKCJA AI SUGGESTION Z OCHRONĄ ZADAŃ SPECJALNYCH ---
     const handleAISuggestion = async () => {
         setIsLoading(true);
         try {
-            const assignedLogins = Object.values(zones).flat().map(w => String(w.worker_login));
-            const response = await axios.post('/api/plan/ai_suggest', { shift: shift, target_date: date, locked_logins: assignedLogins });
+            const allWorkers = [...pool, ...Object.values(zones).flat()];
+            
+            // TARCZA OCHRONNA: Zbieramy loginy ludzi, którzy są w strefach specjalnych
+            const specialZones = ['rozładunek', 'water spider', 'produkcja wypełniacza', 'załadunki', 'sprzątanie'];
+            const lockedLogins = allWorkers
+                .filter(w => specialZones.includes(w.task))
+                .map(w => String(w.worker_login));
+
+            const response = await axios.post('/api/plan/ai_suggest', { 
+                shift: shift, 
+                target_date: date, 
+                locked_logins: lockedLogins 
+            });
             const suggestions = response.data; 
 
-            const newZones = { ...zones };
+            const newZones = { 
+                receiving: [], putaway: [], picking: [], packing: [], sorting: [], 
+                'rozładunek': [], 'water spider': [], 'produkcja wypełniacza': [], 'załadunki': [], 'sprzątanie': []
+            };
             const newPool = [];
 
-            pool.forEach(w => {
+            allWorkers.forEach(w => {
+                // Jeśli jest na zadaniu specjalnym, zostaje tam gdzie był!
+                if (lockedLogins.includes(String(w.worker_login))) {
+                    if (newZones[w.task] !== undefined) {
+                        newZones[w.task].push(w);
+                    } else {
+                        newPool.push(w);
+                    }
+                    return; 
+                }
+
+                // AI decyduje dla reszty
                 let suggestedTask = suggestions[String(w.worker_login)];
                 
                 if (suggestedTask && suggestedTask.toLowerCase().trim().startsWith('picking')) {
@@ -197,14 +286,15 @@ const WorkPlan = () => {
                 }
 
                 if (suggestedTask && newZones[suggestedTask] !== undefined) {
-                    newZones[suggestedTask] = [...newZones[suggestedTask], { ...w, task: suggestedTask }];
+                    newZones[suggestedTask].push({ ...w, task: suggestedTask });
                 } else {
-                    newPool.push(w);
+                    newPool.push({ ...w, task: 'unassigned' });
                 }
             });
 
             setZones(newZones);
             setPool(newPool);
+            setSelectedWorkers([]); // Czyszczenie po zmianach AI
             setIsDraft(true);
         } catch (error) {
             console.error("❌ AI Error:", error);
@@ -237,18 +327,27 @@ const WorkPlan = () => {
     };
 
     // --- MIKRO-KARTA PRACOWNIKA ---
-    const WorkerCard = ({ worker, sourceZone }) => {
+    const WorkerCard = ({ worker }) => {
         const topSkill = getBestSkill(worker);
         const isPresent = !!worker.is_present;
-        const presenceClasses = isPresent 
+        const login = String(worker.worker_login);
+        const isSelected = selectedWorkers.includes(login);
+        
+        let presenceClasses = isPresent 
             ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-emerald-100/50' 
             : 'bg-rose-50 border-rose-200 text-rose-900 opacity-70';         
+
+        // Nakładka stylu, gdy karta jest zaznaczona do przeciągnięcia
+        if (isSelected) {
+            presenceClasses += ' ring-2 ring-indigo-500 ring-offset-1 bg-indigo-50 border-indigo-400';
+        }
 
         return (
             <div
                 draggable
-                onDragStart={(e) => handleDragStart(e, worker.worker_login, sourceZone)}
-                className={`flex flex-col gap-0.5 p-1 rounded-md border cursor-grab active:cursor-grabbing shadow-sm hover:scale-105 transition-transform ${presenceClasses}`}
+                onDragStart={(e) => handleDragStart(e, login)}
+                onClick={() => toggleWorkerSelection(login)}
+                className={`flex flex-col gap-0.5 p-1 rounded-md border cursor-pointer active:cursor-grabbing shadow-sm hover:scale-105 transition-all ${presenceClasses}`}
                 title={worker.full_name || 'Brak danych'}
             >
                 <div className="flex justify-between items-center w-full gap-0.5">
@@ -256,7 +355,10 @@ const WorkPlan = () => {
                     <input 
                         type="checkbox"
                         checked={isPresent}
-                        onChange={() => handlePresenceChange(worker.worker_login, isPresent)}
+                        onChange={(e) => {
+                            e.stopPropagation(); // Żeby kliknięcie w checkbox nie zaznaczało karty
+                            handlePresenceChange(worker.worker_login, isPresent);
+                        }}
                         className="w-2 h-2 rounded cursor-pointer accent-emerald-600 shrink-0 border-slate-300 m-0"
                         title="Obecność"
                     />
@@ -310,21 +412,22 @@ const WorkPlan = () => {
             </div>
 
             {/* MAIN WORKSPACE */}
-            <div className="flex flex-1 overflow-hidden p-3 gap-2">
+            <div className="flex flex-1 overflow-hidden p-3 gap-2" onClick={() => {if(selectedWorkers.length > 0) setSelectedWorkers([])}}>
+                {/* Kliknięcie w tło odznacza wszystkich */}
                 
                 {/* POOL */}
-                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} className="w-[16%] min-w-[140px] bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col overflow-hidden shadow-inner shrink-0">
+                <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, 'pool')} onClick={(e) => e.stopPropagation()} className="w-[16%] min-w-[140px] bg-slate-200/30 border-2 border-dashed border-slate-300 rounded-2xl flex flex-col overflow-hidden shadow-inner shrink-0">
                     <div className="p-3 bg-white/50 border-b border-slate-200 flex justify-between items-center backdrop-blur-sm">
                         <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest truncate">Unassigned</span>
                         <span className="bg-white text-slate-900 text-[9px] font-black px-2 py-0.5 rounded-full border border-slate-200">{pool.length}</span>
                     </div>
                     <div className="flex-1 overflow-y-auto p-2 custom-scrollbar grid grid-cols-3 gap-1 content-start">
-                        {pool.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone="pool" />)}
+                        {pool.map(worker => <WorkerCard key={worker.worker_login} worker={worker} />)}
                     </div>
                 </div>
 
                 {/* ZONES */}
-                <div className="flex-1 flex gap-2 overflow-hidden">
+                <div className="flex-1 flex gap-2 overflow-hidden" onClick={(e) => e.stopPropagation()}>
                     {ZONES.map(zone => {
                         
                         // Renderowanie GRUP z kolumnami (np. Manager Tasks)
@@ -360,7 +463,7 @@ const WorkPlan = () => {
                                                     <span className={`text-[9px] font-black bg-white px-1.5 py-[1px] rounded border border-slate-200 leading-none ${subZoneBadgeClass}`}>{zones[subZone.id]?.length || 0}</span>
                                                 </div>
                                                 <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start bg-slate-50/30">
-                                                    {zones[subZone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={subZone.id} />)}
+                                                    {zones[subZone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} />)}
                                                 </div>
                                             </div>
                                         ))}
@@ -379,7 +482,7 @@ const WorkPlan = () => {
                                     <span className="text-[9px] font-black bg-white px-1.5 py-0.5 rounded-md border shrink-0 text-indigo-600 border-indigo-100">{zones[zone.id]?.length || 0}</span>
                                 </div>
                                 <div className="flex-1 overflow-y-auto p-1.5 custom-scrollbar grid grid-cols-3 gap-1 content-start">
-                                    {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} sourceZone={zone.id} />)}
+                                    {zones[zone.id]?.map(worker => <WorkerCard key={worker.worker_login} worker={worker} />)}
                                 </div>
                             </div>
                         );

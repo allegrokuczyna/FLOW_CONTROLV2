@@ -8,7 +8,7 @@ from sqlalchemy import delete, insert, cast, Date, select, func
 from sqlalchemy.dialects.postgresql import insert  # Wyłącznie Postgres do UPSERT
 from app.core.auth import get_d365_access_token
 from app.core.config import settings
-from app.db.models import WorkerPerformance, Schedule, ShiftAssignment, ForecastIntake, ZoneConstraint, WorkerSpecialTask
+from app.db.models import WorkerPerformance, Schedule, ShiftAssignment, ForecastIntake, ZoneConstraint, WorkerSpecialTask, SortWork
 import logging
 
 # ==============================================================================
@@ -601,7 +601,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.auth import get_d365_access_token
-from app.db.models import InboundMezzanineWorks, InventoryQty
+from app.db.models import InboundMezzanineWorks, InventoryQty, PackingWork
 
 async def fetch_and_save_workpool_volumes(db: AsyncSession):
     token = await get_d365_access_token()
@@ -722,7 +722,7 @@ async def fetch_and_save_inventory_qty(db: AsyncSession):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(d365_endpoint, json=payload, headers=headers)
             response.raise_for_status() 
             data = response.json()
@@ -858,3 +858,148 @@ async def fetch_and_save_outbound_works(db: AsyncSession):
     
     print(f"✅ Pomyślnie nadpisano {len(values)} procesów Outbound w bazie PostgreSQL.")
     return len(values)
+
+
+
+
+
+async def fetch_and_save_packing_qty(db: AsyncSession):
+    token = await get_d365_access_token()
+    base_url = settings.D365_URL.rstrip('/')
+    d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+    payload = {
+        "_request": {
+            "Message": {
+
+                "RequestID": "fastapi-packing-sync", 
+                "RequestType": "GetRows",
+                "RequestService": "QRDE",
+                "RequestSource": "FastAPI-Sync"
+            },
+            "EndpointParamName": "FlowPackQuery", 
+            "QueryValues": []
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            response.raise_for_status() 
+            data = response.json()
+
+        rows = data.get("Rows") or []
+        
+    except Exception as e:
+        print(f"❌ Błąd pobierania ilości do pakowania z QRDE: {e}")
+        raise e
+
+    if not rows:
+        print("⚠️ Brak danych do pakowania z QRDE.")
+        return 0
+
+    row = rows[0] 
+    columns = row.get("Columns", [])
+    
+
+    row_dict = {col.get("FieldName"): col.get("Value") for col in columns if "FieldName" in col}
+
+    total_qty = float(row_dict.get("availphysical") or 0.0)
+
+    
+    values = [{
+        "id": 1,
+        "value": total_qty
+    }]
+
+
+    stmt = insert(PackingWork).values(values)
+    
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['id'], 
+        set_={
+            "value": stmt.excluded.value,
+            "updated_at": datetime.utcnow()
+        }
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+    
+    print(f"✅ Pomyślnie zaktualizowano stan sztuk do pakowania: {total_qty}")
+    return 1
+
+
+
+async def fetch_and_save_sort_qty(db: AsyncSession):
+    token = await get_d365_access_token()
+    base_url = settings.D365_URL.rstrip('/')
+    d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+    payload = {
+        "_request": {
+            "Message": {
+                "RequestID": "fastapi-sort-sync",
+                "RequestType": "GetRows",
+                "RequestService": "QRDE",
+                "RequestSource": "FastAPI-Sync"
+            },
+            "EndpointParamName": "FlowSortQuery", 
+            "QueryValues": []
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            response.raise_for_status() 
+            data = response.json()
+
+        rows = data.get("Rows") or []
+        
+    except Exception as e:
+        print(f"❌ Błąd pobierania ilości do sortowania z QRDE: {e}")
+        raise e
+
+    if not rows:
+        print("⚠️ Brak danych do sortowania z QRDE.")
+        return 0
+
+    row = rows[0] 
+    columns = row.get("Columns", [])
+    row_dict = {col.get("FieldName"): col.get("Value") for col in columns if "FieldName" in col}
+    
+    
+    total_qty = float(row_dict.get("qty") or 0.0)
+
+ 
+    values = [{
+        "id": 1,
+        "qty": total_qty
+    }]
+
+    stmt = insert(SortWork).values(values)
+    
+    stmt = stmt.on_conflict_do_update(
+        index_elements=['id'], 
+        set_={
+            "qty": stmt.excluded.qty,
+            "updated_at": datetime.utcnow()
+        }
+    )
+
+    await db.execute(stmt)
+    await db.commit()
+    
+    print(f"✅ Pomyślnie zaktualizowano stan paczek do sortowania: {total_qty}")
+    return 1

@@ -5,12 +5,12 @@ from datetime import datetime
 
 # --- IMPORTY STRUKTURALNE ---
 from app.db.database import get_db
-from app.db.models import User, InboundMezzanineWorks
+from app.db.models import User, InboundMezzanineWorks, PackingWork, SortWork
 from app.api.deps import get_current_user
 from app.db.models import User, InboundMezzanineWorks, InventoryQty, OutboundWork
 
 # Importujemy i parser Excela i silnik QRDE
-from app.services.sync_service import process_excel_master, sync_active_works_from_d365, InboundMezzanineWorks, fetch_and_save_inventory_qty, fetch_and_save_outbound_works
+from app.services.sync_service import process_excel_master, sync_active_works_from_d365, InboundMezzanineWorks, fetch_and_save_inventory_qty, fetch_and_save_outbound_works, fetch_and_save_packing_qty, fetch_and_save_sort_qty
 from sqlalchemy.dialects.postgresql import insert
 import httpx
 from app.core.config import settings
@@ -213,27 +213,62 @@ async def trigger_outbound_sync(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Błąd synchronizacji Outbound: {str(e)}")
     
 
+@router.post("/packing-qty")
+async def trigger_packing_sync(db: AsyncSession = Depends(get_db)):
+    """Pobiera wolumeny prac dla procesu pakowania i nadpisuje stan w bazie."""
+    try:
+        saved_count = await fetch_and_save_packing_qty(db)
+        return {
+            "status": "success", 
+            "message": "Zaktualizowano wolumeny pakowania", 
+            "records_processed": saved_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd synchronizacji pakowania: {str(e)}")
+    
+
+
+
+@router.post("/sort-qty")
+async def trigger_sort_sync(db: AsyncSession = Depends(get_db)):
+    """Pobiera ilości do sortowania i zapisuje w bazie."""
+    try:
+        saved = await fetch_and_save_sort_qty(db)
+        return {"status": "success", "message": "Zaktualizowano sortowanie", "updated": saved}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd synchronizacji: {str(e)}")
+
+
+
 
 
 @router.get("/live-view")
 async def get_live_warehouse_view(db: AsyncSession = Depends(get_db)):
-    """Pobiera skonsolidowany widok magazynu dla Frontendu (Live View)."""
-    
-    # 1. Przyjęcia (Inbound)
+    # 1. Inbound
     inbound_res = await db.execute(select(InboundMezzanineWorks))
     inbound = inbound_res.scalars().all()
     inbound_works = sum(i.work_count for i in inbound)
     inbound_qty = sum(i.item_qty for i in inbound)
 
-    # 2. Putaway (Inventory)
+    # 2. Putaway
     inv_res = await db.execute(select(InventoryQty).where(InventoryQty.id == 1))
     inventory = inv_res.scalar_one_or_none()
     putaway_qty = inventory.available_physical if inventory else 0
 
-    # 3. Picking (Outbound)
+    # 3. Picking
     outbound_res = await db.execute(select(OutboundWork))
     outbound = outbound_res.scalars().all()
     outbound_qty = sum(o.work_qty for o in outbound)
+
+    # 4. Packing
+    packing_res = await db.execute(select(PackingWork).where(PackingWork.id == 1))
+    packing_row = packing_res.scalar_one_or_none()
+    packing_qty = int(packing_row.value) if packing_row else 0
+
+    # 5. Sorting (NOWOŚĆ!)
+    sort_res = await db.execute(select(SortWork).where(SortWork.id == 1))
+    sort_row = sort_res.scalar_one_or_none()
+    sort_qty = int(sort_row.qty) if sort_row else 0
 
     return {
         "status": "success",
@@ -242,7 +277,7 @@ async def get_live_warehouse_view(db: AsyncSession = Depends(get_db)):
             "receiving": {"works": inbound_works, "qty": inbound_qty},
             "putaway": {"works": "-", "qty": putaway_qty},
             "picking": {"works": len(outbound), "qty": outbound_qty},
-            "packing": {"works": 0, "qty": 0}, 
-            "sorting": {"works": 0, "qty": 0}  
+            "packing": {"works": "-", "qty": packing_qty},
+            "sorting": {"works": "-", "qty": sort_qty}  # <-- Wszystko żyje!
         }
     }
