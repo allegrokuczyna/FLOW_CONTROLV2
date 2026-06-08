@@ -767,3 +767,94 @@ async def fetch_and_save_inventory_qty(db: AsyncSession):
     
     print(f"✅ Pomyślnie zaktualizowano stan technicznych przyjęć: {total_qty} szt.")
     return 1
+
+
+
+import httpx
+from datetime import datetime
+from sqlalchemy import delete
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.auth import get_d365_access_token
+from app.db.models import OutboundWork
+
+async def fetch_and_save_outbound_works(db: AsyncSession):
+    
+    token = await get_d365_access_token()
+    base_url = settings.D365_URL.rstrip('/')
+    d365_endpoint = f"{base_url}/api/services/IWSQRDE/QRDE/GetRows"
+
+    payload = {
+        "_request": {
+            "Message": {
+                "RequestID": f"fastapi-outbound-{int(datetime.utcnow().timestamp())}",
+                "RequestType": "GetRows",
+                "RequestService": "QRDE",
+                "RequestSource": "FastAPI-Sync"
+            },
+
+            "EndpointParamName": "OutFlowControl", 
+            "QueryValues": []
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(d365_endpoint, json=payload, headers=headers)
+            response.raise_for_status() 
+            data = response.json()
+
+        rows = data.get("Rows") or []
+        
+    except Exception as e:
+        print(f"❌ Błąd pobierania Outbound z QRDE: {e}")
+        raise e
+
+    if not rows:
+        print("⚠️ Brak danych Outbound z QRDE (Zwrócono puste). Czyszczę tabelę.")
+        # Jeśli nie ma prac, czyścimy bazę do zera
+        await db.execute(delete(OutboundWork))
+        await db.commit()
+        return 0
+
+    values = []
+
+
+    for row in rows:
+        columns = row.get("Columns") or []
+        row_dict = {col.get("FieldName"): col.get("Value") for col in columns if "FieldName" in col}
+        
+        workpool_id = row_dict.get("workpoolid")
+        
+        if not workpool_id:
+            continue
+            
+
+        carrier = row_dict.get("whacarriercode") or "BRAK"
+        
+        values.append({
+            "work_pool_id": str(workpool_id),
+            "carrier": str(carrier),
+            "work_qty": int(float(row_dict.get("TotalQty") or 0.0))
+        })
+
+    if not values:
+        return 0
+
+ 
+    await db.execute(delete(OutboundWork))
+    
+  
+    stmt = insert(OutboundWork).values(values)
+    await db.execute(stmt)
+    await db.commit()
+    
+    print(f"✅ Pomyślnie nadpisano {len(values)} procesów Outbound w bazie PostgreSQL.")
+    return len(values)

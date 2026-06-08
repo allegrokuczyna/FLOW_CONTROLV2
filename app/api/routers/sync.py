@@ -7,9 +7,10 @@ from datetime import datetime
 from app.db.database import get_db
 from app.db.models import User, InboundMezzanineWorks
 from app.api.deps import get_current_user
+from app.db.models import User, InboundMezzanineWorks, InventoryQty, OutboundWork
 
 # Importujemy i parser Excela i silnik QRDE
-from app.services.sync_service import process_excel_master, sync_active_works_from_d365, InboundMezzanineWorks, fetch_and_save_inventory_qty
+from app.services.sync_service import process_excel_master, sync_active_works_from_d365, InboundMezzanineWorks, fetch_and_save_inventory_qty, fetch_and_save_outbound_works
 from sqlalchemy.dialects.postgresql import insert
 import httpx
 from app.core.config import settings
@@ -194,3 +195,54 @@ async def trigger_inventory_sync(db: AsyncSession = Depends(get_db)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Błąd synchronizacji: {str(e)}")
+    
+
+
+
+@router.post("/outbound-works")
+async def trigger_outbound_sync(db: AsyncSession = Depends(get_db)):
+    """Pobiera wolumeny prac z procesów wychodzących i nadpisuje stan w bazie."""
+    try:
+        saved_count = await fetch_and_save_outbound_works(db)
+        return {
+            "status": "success", 
+            "message": "Zaktualizowano wolumeny Outbound", 
+            "records_processed": saved_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Błąd synchronizacji Outbound: {str(e)}")
+    
+
+
+
+@router.get("/live-view")
+async def get_live_warehouse_view(db: AsyncSession = Depends(get_db)):
+    """Pobiera skonsolidowany widok magazynu dla Frontendu (Live View)."""
+    
+    # 1. Przyjęcia (Inbound)
+    inbound_res = await db.execute(select(InboundMezzanineWorks))
+    inbound = inbound_res.scalars().all()
+    inbound_works = sum(i.work_count for i in inbound)
+    inbound_qty = sum(i.item_qty for i in inbound)
+
+    # 2. Putaway (Inventory)
+    inv_res = await db.execute(select(InventoryQty).where(InventoryQty.id == 1))
+    inventory = inv_res.scalar_one_or_none()
+    putaway_qty = inventory.available_physical if inventory else 0
+
+    # 3. Picking (Outbound)
+    outbound_res = await db.execute(select(OutboundWork))
+    outbound = outbound_res.scalars().all()
+    outbound_qty = sum(o.work_qty for o in outbound)
+
+    return {
+        "status": "success",
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "data": {
+            "receiving": {"works": inbound_works, "qty": inbound_qty},
+            "putaway": {"works": "-", "qty": putaway_qty},
+            "picking": {"works": len(outbound), "qty": outbound_qty},
+            "packing": {"works": 0, "qty": 0}, 
+            "sorting": {"works": 0, "qty": 0}  
+        }
+    }

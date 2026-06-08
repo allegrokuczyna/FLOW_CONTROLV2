@@ -157,3 +157,19 @@ class InventoryQty(Base):
     available_physical = Column(Integer, default=0)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+
+
+class OutboundWork(Base):
+    __tablename__ = "outbound_works"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    carrier = Column(String, index=True)
+    work_pool_id = Column(String, index=True)
+    work_qty = Column(Integer, default=0)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    

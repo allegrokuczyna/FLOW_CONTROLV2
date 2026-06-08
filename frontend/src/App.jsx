@@ -19,7 +19,8 @@ function App() {
   // =========================================================================
   // WYJĄTEK DLA TABLICY TV
   // =========================================================================
-  if (window.location.pathname === '/tv') {
+  const currentPath = window.location.pathname.replace(/\/$/, ""); // Usuwa ukośnik z końca, jeśli jest
+  if (currentPath === '/tv') {
     return <TVBoard />;
   }
 

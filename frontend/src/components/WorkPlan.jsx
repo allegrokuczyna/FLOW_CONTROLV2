@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Briefcase } from 'lucide-react';
+import { Bot, CheckCircle2, CalendarDays, Clock, RefreshCcw, Loader2, Briefcase, AlertTriangle } from 'lucide-react';
 import { usePolling } from '../hooks/usePolling';
 
 // ZMIANA: Zostawiamy krótkie ID, a dodatkowe teksty wstawiamy TYLKO do "label"
@@ -271,8 +271,8 @@ const WorkPlan = () => {
     return (
         <div className="flex flex-col h-full bg-[#f8fafc] relative">
             {/* TOOLBAR */}
-            <div className="flex justify-between items-center px-4 py-3 bg-white border-b border-slate-200 shrink-0 shadow-sm z-10">
-                <div className="flex items-center gap-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center px-4 py-3 bg-white border-b border-slate-200 shrink-0 shadow-sm z-10 gap-3">
+                <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-sm">
                         <CalendarDays size={14} className="text-slate-400 ml-2" />
                         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="bg-transparent text-xs font-black p-1.5 outline-none text-slate-700 cursor-pointer" />
@@ -286,14 +286,24 @@ const WorkPlan = () => {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                    <button onClick={fetchData} className="p-2 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                    {/* INFO O BRAKU LIMITÓW DLA AI */}
+                    <div className="flex items-center gap-1.5 bg-amber-50 text-amber-700 px-3 py-1.5 rounded-lg border border-amber-200 shadow-sm shrink-0">
+                        <AlertTriangle size={14} className="text-amber-500" />
+                        <p className="text-[9px] font-bold uppercase tracking-wider hidden md:block">
+                            Brak ustawionych limitów Min/Max w ustawieniach powoduje swobodne przydzielanie przez AI.
+                        </p>
+                    </div>
+
+                    <button onClick={fetchData} className="p-2 text-slate-400 hover:bg-slate-50 border border-transparent hover:border-slate-200 rounded-lg transition-all" title="Odśwież Listę">
                         <RefreshCcw size={16} className={`${isLoading ? 'animate-spin' : ''}`} />
                     </button>
-                    <button onClick={handleAISuggestion} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md hover:bg-indigo-600 transition-all hover:-translate-y-0.5">
+                    
+                    <button onClick={handleAISuggestion} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md hover:bg-indigo-600 transition-all hover:-translate-y-0.5 whitespace-nowrap">
                         <Bot size={12} /> AI Suggestion
                     </button>
-                    <button disabled={!isDraft} onClick={handleConfirm} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md disabled:opacity-30 transition-all hover:bg-emerald-700 hover:-translate-y-0.5">
+                    
+                    <button disabled={!isDraft} onClick={handleConfirm} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 shadow-md disabled:opacity-30 transition-all hover:bg-emerald-700 hover:-translate-y-0.5 whitespace-nowrap">
                         <CheckCircle2 size={12} /> Confirm Plan
                     </button>
                 </div>

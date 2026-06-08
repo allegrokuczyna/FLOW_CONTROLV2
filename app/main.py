@@ -5,16 +5,24 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# --- WSZYSTKIE IMPORTY Z 'APP' MUSZĄ BYĆ TUTAJ NA GÓRZE ---
+import app.db.models  # <--- Przeniesione z dołu
+from app.db.database import engine, Base, AsyncSessionLocal
+from app.api.endpoints import router as api_router
+from app.services.gate_sync import poll_gates_and_update  # Agent SSRS
+
+# --- NOWE IMPORTY DLA SILNIKA AI (WOLUMENY) ---
+from app.services.sync_service import (
+    fetch_and_save_workpool_volumes,
+    fetch_and_save_inventory_qty,
+    fetch_and_save_outbound_works
+)
+
 if sys.platform == 'win32':
     selector = selectors.SelectSelector()
     loop = asyncio.SelectorEventLoop(selector)
     asyncio.set_event_loop(loop)
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-from app.db.database import engine, Base, AsyncSessionLocal
-from app.api.endpoints import router as api_router
-import app.db.models 
-from app.services.gate_sync import poll_gates_and_update  # Agent SSRS
 
 
 @asynccontextmanager
@@ -38,14 +46,11 @@ async def lifespan(app: FastAPI):
                 try:
                     # Otwieramy osobną, krótką sesję bazy specjalnie dla bota automatycznego
                     async with AsyncSessionLocal() as d365_session:
-                        # POPRAWKA: Zaimportowanie nowej funkcji z QRDE
+                        # Import wewnątrz funkcji jest ok (zapobiega konfliktom kołowym)
                         from app.api.routers.sync import execute_d365_qrde_sync
                         
                         print("🕒 [HARMONOGRAM] Rozpoczynam automatyczną synchronizację z D365...")
-                        
-                        # POPRAWKA: Wywołanie poprawnej funkcji
                         await execute_d365_qrde_sync(d365_session, triggered_by="Automatycznie")
-                        
                         print("🕒 [HARMONOGRAM] Automatyczna synchronizacja zakończona sukcesem.")
                 except Exception as e:
                     print(f"❌ [HARMONOGRAM] Błąd pętli automatycznej D365: {e}")
@@ -53,14 +58,35 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(600)  # 10 minut = 600 sekund
 
         d365_task = asyncio.create_task(d365_scheduler_loop())
-        
+
+        # ==============================================================================
+        # 4. Uruchomienie harmonogramu dla AI & Live View (Automatycznie co 15 min)
+        # ==============================================================================
+        print("🕒 Uruchamianie zadań w tle (Wolumeny magazynowe dla AI co 15 min)...")
+        async def live_volumes_scheduler_loop():
+            await asyncio.sleep(15) # Startuje chwilę po głównym D365, żeby nie dusić sieci naraz
+            while True:
+                try:
+                    async with AsyncSessionLocal() as live_session:
+                        print("🔄 [AI SYNC] Rozpoczynam pobieranie żywych wolumenów (Inbound, Inventory, Outbound)...")
+                        await fetch_and_save_workpool_volumes(live_session)
+                        await fetch_and_save_inventory_qty(live_session)
+                        await fetch_and_save_outbound_works(live_session)
+                        print("✅ [AI SYNC] Pobieranie wolumenów zakończone sukcesem.")
+                except Exception as e:
+                    print(f"❌ [AI SYNC] Błąd podczas synchronizacji wolumenów: {e}")
+                
+                await asyncio.sleep(900)  # 15 minut = 900 sekund
+
+        live_volumes_task = asyncio.create_task(live_volumes_scheduler_loop())
+
         yield 
         
-        # 4. Procedura bezpiecznego wyłączania aplikacji
+        # 5. Procedura bezpiecznego wyłączania aplikacji
         print("🛑 Zamykanie zadań w tle...")
         gate_task.cancel()
         d365_task.cancel()
-
+        live_volumes_task.cancel()
 
 app = FastAPI(title="Flow Control API V2", lifespan=lifespan)
 
